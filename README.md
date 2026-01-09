@@ -14,7 +14,7 @@ A terminal interface for Claude Code on Rokid Glasses. View and interact with Cl
 │  │  • Handles terminal I/O                         │   │
 │  └─────────────────────────────────────────────────┘   │
 └──────────────────────────┬──────────────────────────────┘
-                           │ WebSocket (via Tailscale)
+                           │ WebSocket
 ┌──────────────────────────▼──────────────────────────────┐
 │                      PHONE                              │
 │  ┌─────────────────────────────────────────────────┐   │
