@@ -8,7 +8,7 @@ A terminal interface for Claude Code on Rokid Glasses. View and interact with Cl
 ┌─────────────────────────────────────────────────────────┐
 │                   REMOTE SERVER                         │
 │  ┌─────────────────────────────────────────────────┐   │
-│  │           server/ (Node.js)                      │   │
+│  │           server/ (Node.js)                     │   │
 │  │  • Spawns Claude Code in PTY                    │   │
 │  │  • WebSocket endpoint for phone connection      │   │
 │  │  • Handles terminal I/O                         │   │
@@ -17,24 +17,24 @@ A terminal interface for Claude Code on Rokid Glasses. View and interact with Cl
                            │ WebSocket
 ┌──────────────────────────▼──────────────────────────────┐
 │                      PHONE                              │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │           phone-app/ (Android)                   │   │
-│  │  • CXR-M SDK for glasses communication          │   │
-│  │  • WebSocket client to server                   │   │
-│  │  • Voice recognition (speech → text)            │   │
-│  │  • Bridges server ↔ glasses                     │   │
-│  └─────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │           phone-app/ (Android)                  │    │
+│  │  • CXR-M SDK for glasses communication          │    │
+│  │  • WebSocket client to server                   │    │
+│  │  • Voice recognition (speech → text)            │    │
+│  │  • Bridges server ↔ glasses                     │    │
+│  └─────────────────────────────────────────────────┘    │
 └──────────────────────────┬──────────────────────────────┘
                            │ BLE (CXR protocol)
 ┌──────────────────────────▼──────────────────────────────┐
 │                     GLASSES                             │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │           glasses-app/ (Android)                 │   │
-│  │  • CXR-S SDK for phone communication            │   │
-│  │  • HUD display (optimized for monochrome)       │   │
-│  │  • Gesture input (touchpad)                     │   │
-│  │  • Camera capture for screenshots               │   │
-│  └─────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │           glasses-app/ (Android)                │    │
+│  │  • CXR-S SDK for phone communication            │    │
+│  │  • HUD display (optimized for monochrome)       │    │
+│  │  • Gesture input (touchpad)                     │    │
+│  │  • Camera capture for screenshots               │    │
+│  └─────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────┘
 ```
 
