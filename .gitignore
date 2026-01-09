@@ -1,0 +1,32 @@
+# Secrets - NEVER COMMIT
+local.properties
+*.keystore
+*.jks
+
+# Android Studio
+.idea/
+.gradle/
+build/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Phone app
+phone-app/build/
+phone-app/.cxx/
+
+# Glasses app
+glasses-app/build/
+glasses-app/.cxx/
+
+# Shared module
+shared/build/
+
+# Server
+server/node_modules/
+server/.env
+
+# OS files
+.DS_Store
+Thumbs.db
