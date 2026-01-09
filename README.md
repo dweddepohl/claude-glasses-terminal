@@ -7,12 +7,12 @@ A terminal interface for Claude Code on Rokid Glasses. View and interact with Cl
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                   REMOTE SERVER                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │           server/ (Node.js)                     │   │
-│  │  • Spawns Claude Code in PTY                    │   │
-│  │  • WebSocket endpoint for phone connection      │   │
-│  │  • Handles terminal I/O                         │   │
-│  └─────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │           server/ (Node.js)                     │    │
+│  │  • Spawns Claude Code in PTY                    │    │
+│  │  • WebSocket endpoint for phone connection      │    │
+│  │  • Handles terminal I/O                         │    │
+│  └─────────────────────────────────────────────────┘    │
 └──────────────────────────┬──────────────────────────────┘
                            │ WebSocket
 ┌──────────────────────────▼──────────────────────────────┐
