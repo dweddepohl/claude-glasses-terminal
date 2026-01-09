@@ -81,7 +81,7 @@ npm install
 npm start
 ```
 
-The server will start on port 8080. Use Tailscale or another VPN to expose it to your phone.
+The server will start on port 8080. Use Tailscale or another VPN to expose it to your phone on the go.
 
 ### 2. Phone App
 
