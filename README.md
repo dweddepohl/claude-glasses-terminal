@@ -1,4 +1,4 @@
-# Claude Glasses Terminal
+# Claude Code for Rokid AI Glasse 👾x🕶️ 
 
 A terminal interface for Claude Code on Rokid Glasses. View and interact with Claude Code through your AR glasses using voice commands and gestures.
 
