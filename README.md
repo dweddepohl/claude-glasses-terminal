@@ -9,7 +9,7 @@ A terminal interface for Claude Code on Rokid Glasses. View and interact with Cl
 │                   REMOTE SERVER                         │
 │  ┌─────────────────────────────────────────────────┐    │
 │  │           server/ (Node.js)                     │    │
-│  │  • Spawns Claude Code in PTY                    │    │
+│  │  • Runs Claude Code in tmux session             │    │
 │  │  • WebSocket endpoint for phone connection      │    │
 │  │  • Handles terminal I/O                         │    │
 │  └─────────────────────────────────────────────────┘    │
@@ -61,7 +61,7 @@ claude-glasses-terminal/
 │
 └── server/                 # Node.js WebSocket server
     └── src/
-        └── index.js        # Claude Code PTY wrapper
+        └── index.js        # Claude Code tmux wrapper
 ```
 
 ## Setup
@@ -70,6 +70,8 @@ claude-glasses-terminal/
 
 - Android Studio (latest)
 - Node.js 18+
+- tmux (`brew install tmux` on macOS)
+- Claude Code CLI installed and configured
 - Rokid Glasses with YodaOS-Sprite
 - Rokid developer account (for CXR SDK access)
 
@@ -131,11 +133,12 @@ Swipe Left/Right: Tab / Shift-Tab
 
 ## HUD Display
 
-The glasses display is optimized for the monochrome Micro-LED:
+The glasses display is optimized for the 480×398 pixel monochrome Micro-LED:
 - Pure black background (blends with real world)
 - Neon green/cyan text (high visibility)
-- Centered layout (avoids edge clipping)
-- ~50 characters × 12 lines visible
+- JetBrains Mono font for proper box-drawing character alignment
+- Auto-scaling font size to fit terminal width without wrapping
+- ~50 characters × 15 lines visible (configurable presets available)
 
 ## Development
 
