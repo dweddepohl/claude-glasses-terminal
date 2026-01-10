@@ -116,14 +116,17 @@ adb install glasses-app/build/outputs/apk/debug/glasses-app-debug.apk
 
 ### Gesture Controls
 
-| Mode | Up/Down | Tap | Double-Tap | Long Press |
-|------|---------|-----|------------|------------|
-| **SCROLL** | Scroll view | Jump to end | Switch mode | ESC |
-| **NAVIGATE** | Arrow ↑↓ | Enter | Switch mode | ESC |
-| **COMMAND** | Tab / ESC | Shift-Tab | Switch mode | ESC |
+The temple touchpad has two swipe directions: **forward** (towards eyes) and **backward** (towards ear).
 
-- **Up/Down**: Volume buttons or vertical swipe on touchpad
-- **Swipe Left/Right**: Shift-Tab / Tab (fallback)
+| Mode | Forward/Backward | Tap | Double-Tap | Long Press |
+|------|------------------|-----|------------|------------|
+| **SCROLL** | Scroll up/down | Jump to end | Switch mode | Voice |
+| **NAVIGATE** | Arrow ↑↓ | Enter | Switch mode | Voice |
+| **COMMAND** | Tab / Escape | Shift-Tab | Switch mode | Voice |
+
+- **Forward swipe**: Scroll up / Arrow up / Tab (depending on mode)
+- **Backward swipe**: Scroll down / Arrow down / Escape (depending on mode)
+- **Hardware Back button**: Escape
 
 ### Voice Commands
 

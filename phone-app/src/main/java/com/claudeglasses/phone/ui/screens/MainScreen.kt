@@ -86,6 +86,14 @@ fun MainScreen() {
         voiceHandler.initialize()
     }
 
+    // Auto-enable debug mode in debug builds for emulator testing
+    LaunchedEffect(Unit) {
+        if (com.claudeglasses.phone.BuildConfig.DEBUG) {
+            android.util.Log.i("MainScreen", "Debug build detected - auto-enabling debug mode for glasses connection")
+            glassesManager.enableDebugMode()
+        }
+    }
+
     // Auto-scroll to bottom when new lines arrive
     LaunchedEffect(terminalLines.size) {
         if (terminalLines.isNotEmpty()) {
@@ -99,11 +107,20 @@ fun MainScreen() {
             try {
                 val json = org.json.JSONObject(message)
                 val type = json.optString("type", "")
-                if (type == "command") {
-                    val command = json.optString("command", "")
-                    android.util.Log.d("MainScreen", "Received command from glasses: $command")
-                    if (command.isNotEmpty()) {
-                        terminalClient.sendKey(command)
+                when (type) {
+                    "command" -> {
+                        val command = json.optString("command", "")
+                        android.util.Log.d("MainScreen", "Received command from glasses: $command")
+                        if (command.isNotEmpty()) {
+                            terminalClient.sendKey(command)
+                        }
+                    }
+                    "voice_input" -> {
+                        val text = json.optString("text", "")
+                        android.util.Log.d("MainScreen", "Received voice input from glasses: $text")
+                        if (text.isNotEmpty()) {
+                            terminalClient.sendInput(text)
+                        }
                     }
                 }
             } catch (e: Exception) {

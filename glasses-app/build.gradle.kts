@@ -39,6 +39,12 @@ android {
         compose = true
         buildConfig = true
     }
+
+    lint {
+        // PhoneConnectionService is not a traditional Android Service,
+        // it's a helper class. Disable this specific lint check.
+        disable += "Instantiatable"
+    }
 }
 
 dependencies {

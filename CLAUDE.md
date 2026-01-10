@@ -39,13 +39,17 @@ The Rokid glasses have a **640×480 monochrome green display**:
 
 ### Gesture Modes
 
-Three interaction modes, cycled via double-tap:
+Three interaction modes, cycled via double-tap. Gestures are **unified** across modes:
 
-| Mode | Up/Down | Tap | Purpose |
-|------|---------|-----|---------|
-| **SCROLL** | Scroll view | Jump to end | Reading output |
-| **NAVIGATE** | Arrow keys | Enter | Menu navigation |
-| **COMMAND** | Tab/ESC | Shift-Tab | Claude Code UI |
+| Mode | Forward/Backward Swipe | Tap | Purpose |
+|------|------------------------|-----|---------|
+| **SCROLL** | Scroll up/down | Jump to end | Reading output |
+| **NAVIGATE** | Arrow up/down | Enter | Menu navigation |
+| **COMMAND** | Tab/Escape | Shift-Tab | Claude Code UI |
+
+**Touchpad directions:**
+- Forward (towards eyes) = scroll up / arrow up / tab
+- Backward (towards ear) = scroll down / arrow down / escape
 
 ### SDK Integration
 

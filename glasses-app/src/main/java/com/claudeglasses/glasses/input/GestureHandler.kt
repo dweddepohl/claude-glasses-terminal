@@ -7,27 +7,26 @@ import kotlin.math.abs
 /**
  * Handles touch gestures on the glasses touchpad
  *
- * Gesture mappings:
- * - Swipe Up/Down: Scroll or navigate depending on mode
- * - Swipe Left/Right: Tab navigation
- * - Tap: Enter/confirm
+ * The Rokid temple touchpad only supports two swipe directions:
+ * - Forward (towards eyes) = SWIPE_FORWARD
+ * - Backward (towards ear) = SWIPE_BACKWARD
+ *
+ * Gesture mappings (unified across all modes):
+ * - Swipe Forward: Scroll up / Arrow up / Tab
+ * - Swipe Backward: Scroll down / Arrow down / Shift-Tab
+ * - Tap: Confirm action
  * - Double-tap: Switch mode
- * - Long press: Escape
+ * - Long press: Voice input
  */
 class GestureHandler(
     private val onGesture: (Gesture) -> Unit
 ) {
     enum class Gesture {
-        SWIPE_UP,
-        SWIPE_DOWN,
-        SWIPE_LEFT,
-        SWIPE_RIGHT,
+        SWIPE_FORWARD,   // Towards eyes - scroll up, arrow up, tab
+        SWIPE_BACKWARD,  // Towards ear - scroll down, arrow down, shift-tab
         TAP,
         DOUBLE_TAP,
-        LONG_PRESS,
-        SCROLL_UP,
-        SCROLL_DOWN,
-        ESCAPE
+        LONG_PRESS
     }
 
     companion object {
@@ -67,22 +66,16 @@ class GestureHandler(
                     return true
                 }
 
-                // Check for swipe
+                // Check for swipe (forward/backward along temple touchpad)
+                // Forward = towards eyes = negative Y (up on screen)
+                // Backward = towards ear = positive Y (down on screen)
+                // Note: Also detect horizontal as forward/backward since touchpad is linear
+                val primaryDelta = if (abs(deltaY) > abs(deltaX)) deltaY else -deltaX
                 if (abs(deltaX) > SWIPE_THRESHOLD || abs(deltaY) > SWIPE_THRESHOLD) {
-                    if (abs(deltaX) > abs(deltaY)) {
-                        // Horizontal swipe
-                        if (deltaX > 0) {
-                            onGesture(Gesture.SWIPE_RIGHT)
-                        } else {
-                            onGesture(Gesture.SWIPE_LEFT)
-                        }
+                    if (primaryDelta < 0) {
+                        onGesture(Gesture.SWIPE_FORWARD)
                     } else {
-                        // Vertical swipe
-                        if (deltaY > 0) {
-                            onGesture(Gesture.SWIPE_DOWN)
-                        } else {
-                            onGesture(Gesture.SWIPE_UP)
-                        }
+                        onGesture(Gesture.SWIPE_BACKWARD)
                     }
                     return true
                 }
