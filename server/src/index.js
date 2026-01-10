@@ -85,6 +85,14 @@ class ClaudeTerminalServer {
 
     if (sessionExists) {
       console.log(`Connecting to existing tmux session '${this.sessionName}'...`);
+      // Force the terminal size for existing session
+      try {
+        execSync(`tmux set-option -t ${this.sessionName} window-size manual`);
+        execSync(`tmux resize-window -t ${this.sessionName} -x ${this.cols} -y ${this.rows}`);
+        console.log(`Resized existing session to ${this.cols}x${this.rows}`);
+      } catch (e) {
+        console.warn('Could not resize existing session:', e.message);
+      }
     } else {
       // Create new tmux session with Claude Code
       console.log(`Creating tmux session '${this.sessionName}' (${this.cols}x${this.rows}) with Claude Code...`);
@@ -149,9 +157,17 @@ class ClaudeTerminalServer {
         console.error('Failed to create session:', e.message);
         return false;
       }
+    } else {
+      // Force resize existing session
+      try {
+        execSync(`tmux set-option -t ${name} window-size manual`);
+        execSync(`tmux resize-window -t ${name} -x ${this.cols} -y ${this.rows}`);
+      } catch (e) {
+        console.warn('Could not resize session:', e.message);
+      }
     }
 
-    console.log(`Switched to session '${name}'`);
+    console.log(`Switched to session '${name}' (${this.cols}x${this.rows})`);
     this.startOutputPolling();
     return true;
   }
