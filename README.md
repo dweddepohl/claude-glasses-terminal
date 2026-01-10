@@ -116,13 +116,14 @@ adb install glasses-app/build/outputs/apk/debug/glasses-app-debug.apk
 
 ### Gesture Controls
 
-| Mode | Swipe Up/Down | Tap | Double-Tap | Long Press |
-|------|---------------|-----|------------|------------|
-| **SCROLL** | Scroll terminal | Enter | Switch mode | ESC |
+| Mode | Up/Down | Tap | Double-Tap | Long Press |
+|------|---------|-----|------------|------------|
+| **SCROLL** | Scroll view | Jump to end | Switch mode | ESC |
 | **NAVIGATE** | Arrow ↑↓ | Enter | Switch mode | ESC |
-| **COMMAND** | — | Enter | Switch mode | ESC |
+| **COMMAND** | Tab / ESC | Shift-Tab | Switch mode | ESC |
 
-Swipe Left/Right: Tab / Shift-Tab
+- **Up/Down**: Volume buttons or vertical swipe on touchpad
+- **Swipe Left/Right**: Shift-Tab / Tab (fallback)
 
 ### Voice Commands
 
@@ -205,6 +206,11 @@ repositories {
     maven { url = uri("https://maven.rokid.com/repository/maven-public/") }
 }
 ```
+
+## Documentation
+
+- [CLAUDE.md](CLAUDE.md) - Development context and guidelines for Claude Code
+- [docs/ROKID.md](docs/ROKID.md) - Rokid hardware specs, SDK reference, and resources
 
 ## TODO
 
