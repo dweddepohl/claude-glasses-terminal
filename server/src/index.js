@@ -17,7 +17,7 @@ import { spawn, execSync } from 'child_process';
 
 const PORT = process.env.PORT || 8080;
 const CLAUDE_COMMAND = process.env.CLAUDE_COMMAND || 'claude';
-const SESSION_NAME = 'claude-glasses';
+const DEFAULT_SESSION_NAME = 'claude-glasses';
 
 // Terminal configuration optimized for glasses HUD display
 // Rokid glasses have a narrow monochrome display
@@ -35,6 +35,7 @@ class ClaudeTerminalServer {
     this.lastOutput = '';
     this.cols = DEFAULT_COLS;
     this.rows = DEFAULT_ROWS;
+    this.sessionName = DEFAULT_SESSION_NAME;
   }
 
   start() {
@@ -79,31 +80,80 @@ class ClaudeTerminalServer {
   }
 
   setupTmux() {
-    // Kill any existing session
-    try {
-      execSync(`tmux kill-session -t ${SESSION_NAME} 2>/dev/null`);
-    } catch (e) {
-      // Session didn't exist, that's fine
+    // Check if session already exists
+    const sessionExists = this.sessionExists(this.sessionName);
+
+    if (sessionExists) {
+      console.log(`Connecting to existing tmux session '${this.sessionName}'...`);
+    } else {
+      // Create new tmux session with Claude Code
+      console.log(`Creating tmux session '${this.sessionName}' (${this.cols}x${this.rows}) with Claude Code...`);
+      try {
+        // Create detached session
+        execSync(`tmux new-session -d -s ${this.sessionName} "${CLAUDE_COMMAND}"`);
+
+        // Force the terminal size - tmux detached sessions need explicit sizing
+        execSync(`tmux set-option -t ${this.sessionName} window-size manual`);
+        execSync(`tmux resize-window -t ${this.sessionName} -x ${this.cols} -y ${this.rows}`);
+
+        console.log('tmux session created successfully');
+      } catch (e) {
+        console.error('Failed to create tmux session:', e.message);
+        console.log('Make sure tmux is installed: brew install tmux');
+        return;
+      }
     }
 
-    // Create new tmux session with Claude Code
-    console.log(`Creating tmux session '${SESSION_NAME}' (${this.cols}x${this.rows}) with Claude Code...`);
+    // Start polling for output
+    this.startOutputPolling();
+  }
+
+  sessionExists(name) {
     try {
-      // Create detached session
-      execSync(`tmux new-session -d -s ${SESSION_NAME} "${CLAUDE_COMMAND}"`);
-
-      // Force the terminal size - tmux detached sessions need explicit sizing
-      execSync(`tmux set-option -t ${SESSION_NAME} window-size manual`);
-      execSync(`tmux resize-window -t ${SESSION_NAME} -x ${this.cols} -y ${this.rows}`);
-
-      console.log('tmux session created successfully');
-
-      // Start polling for output
-      this.startOutputPolling();
+      execSync(`tmux has-session -t ${name} 2>/dev/null`);
+      return true;
     } catch (e) {
-      console.error('Failed to create tmux session:', e.message);
-      console.log('Make sure tmux is installed: brew install tmux');
+      return false;
     }
+  }
+
+  listSessions() {
+    try {
+      const output = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' });
+      return output.trim().split('\n').filter(s => s.length > 0);
+    } catch (e) {
+      // No tmux server running
+      return [];
+    }
+  }
+
+  switchSession(name) {
+    // Stop current polling
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
+
+    this.sessionName = name;
+    this.lastOutput = '';  // Force refresh
+    this.outputBuffer = [];
+
+    if (!this.sessionExists(name)) {
+      // Create new session
+      console.log(`Creating new tmux session '${name}'...`);
+      try {
+        execSync(`tmux new-session -d -s ${name} "${CLAUDE_COMMAND}"`);
+        execSync(`tmux set-option -t ${name} window-size manual`);
+        execSync(`tmux resize-window -t ${name} -x ${this.cols} -y ${this.rows}`);
+      } catch (e) {
+        console.error('Failed to create session:', e.message);
+        return false;
+      }
+    }
+
+    console.log(`Switched to session '${name}'`);
+    this.startOutputPolling();
+    return true;
   }
 
   startOutputPolling() {
@@ -117,7 +167,7 @@ class ClaudeTerminalServer {
     try {
       // Capture the entire visible pane content
       const output = execSync(
-        `tmux capture-pane -t ${SESSION_NAME} -p -S -${this.maxBufferLines}`,
+        `tmux capture-pane -t ${this.sessionName} -p -S -${this.maxBufferLines}`,
         { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
       );
 
@@ -188,6 +238,28 @@ class ClaudeTerminalServer {
           }
           break;
 
+        case 'list_sessions':
+          // List available tmux sessions
+          const sessions = this.listSessions();
+          this.sendToClient(ws, {
+            type: 'sessions',
+            sessions: sessions,
+            current: this.sessionName
+          });
+          break;
+
+        case 'switch_session':
+          // Switch to a different session (or create new)
+          if (msg.session) {
+            const success = this.switchSession(msg.session);
+            this.sendToClient(ws, {
+              type: 'session_switched',
+              session: msg.session,
+              success: success
+            });
+          }
+          break;
+
         default:
           console.warn('Unknown message type:', msg.type);
       }
@@ -206,7 +278,7 @@ class ClaudeTerminalServer {
     this.rows = rows;
     try {
       // Resize the tmux pane
-      execSync(`tmux resize-pane -t ${SESSION_NAME} -x ${cols} -y ${rows}`);
+      execSync(`tmux resize-pane -t ${this.sessionName} -x ${cols} -y ${rows}`);
       // Force output capture after resize
       this.lastOutput = '';  // Force refresh
       setTimeout(() => this.captureOutput(), 100);
@@ -220,7 +292,7 @@ class ClaudeTerminalServer {
       // Escape special characters for tmux
       const escaped = text.replace(/'/g, "'\\''");
       console.log(`Sending to tmux: "${escaped}"`);
-      execSync(`tmux send-keys -t ${SESSION_NAME} '${escaped}'`);
+      execSync(`tmux send-keys -t ${this.sessionName} '${escaped}'`);
       // Force a capture after sending
       setTimeout(() => this.captureOutput(), 50);
     } catch (e) {
@@ -249,7 +321,7 @@ class ClaudeTerminalServer {
     const tmuxKey = keyMap[key];
     if (tmuxKey) {
       try {
-        execSync(`tmux send-keys -t ${SESSION_NAME} ${tmuxKey}`);
+        execSync(`tmux send-keys -t ${this.sessionName} ${tmuxKey}`);
       } catch (e) {
         console.error('Error sending key to tmux:', e.message);
       }
@@ -313,12 +385,7 @@ class ClaudeTerminalServer {
       clearInterval(this.pollInterval);
     }
 
-    // Kill tmux session
-    try {
-      execSync(`tmux kill-session -t ${SESSION_NAME}`);
-    } catch (e) {
-      // Ignore
-    }
+    // Don't kill tmux session - let it persist for reconnection
 
     if (this.wss) {
       this.wss.close();

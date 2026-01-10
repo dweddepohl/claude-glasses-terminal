@@ -323,6 +323,12 @@ class HudActivity : ComponentActivity() {
 
         Log.d(GlassesApp.TAG, "Gesture: $gesture, Level: ${focus.level}, Area: ${focus.focusedArea}")
 
+        // If session picker is open, handle gestures for it
+        if (current.showSessionPicker) {
+            handleSessionPickerGesture(gesture)
+            return
+        }
+
         // If voice is active, TAP cancels voice recognition
         if (isVoiceActive && gesture == Gesture.TAP) {
             Log.d(GlassesApp.TAG, "Cancelling voice recognition via tap")
@@ -339,6 +345,55 @@ class HudActivity : ComponentActivity() {
                 FocusArea.COMMAND -> handleCommandGesture(gesture)
             }
         }
+    }
+
+    private fun handleSessionPickerGesture(gesture: Gesture) {
+        val current = terminalState.value
+        val sessions = current.availableSessions
+        val totalOptions = sessions.size + 1  // +1 for "New Session"
+
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> {
+                // Move selection up
+                val newIndex = maxOf(0, current.selectedSessionIndex - 1)
+                terminalState.value = current.copy(selectedSessionIndex = newIndex)
+            }
+            Gesture.SWIPE_BACKWARD -> {
+                // Move selection down
+                val newIndex = minOf(totalOptions - 1, current.selectedSessionIndex + 1)
+                terminalState.value = current.copy(selectedSessionIndex = newIndex)
+            }
+            Gesture.TAP -> {
+                // Select session
+                val selectedIndex = current.selectedSessionIndex
+                if (selectedIndex < sessions.size) {
+                    // Existing session
+                    switchToSession(sessions[selectedIndex])
+                } else {
+                    // New session - generate name
+                    val newName = generateNewSessionName(sessions)
+                    switchToSession(newName)
+                }
+                terminalState.value = current.copy(showSessionPicker = false)
+            }
+            Gesture.DOUBLE_TAP -> {
+                // Cancel
+                terminalState.value = current.copy(showSessionPicker = false)
+            }
+            Gesture.LONG_PRESS -> {
+                // Ignore
+            }
+        }
+    }
+
+    private fun generateNewSessionName(existingSessions: List<String>): String {
+        var counter = 1
+        var name = "claude-glasses"
+        while (existingSessions.contains(name)) {
+            counter++
+            name = "claude-glasses-$counter"
+        }
+        return name
     }
 
     // Level 0: Area Selection
@@ -495,7 +550,12 @@ class HudActivity : ComponentActivity() {
                 // Execute selected command
                 val command = commands.getOrNull(focus.commandIndex)
                 if (command != null) {
-                    sendCommand(command.key)
+                    if (command.key == "list_sessions") {
+                        // Request session list from server
+                        requestSessionList()
+                    } else {
+                        sendCommand(command.key)
+                    }
                 }
             }
             Gesture.DOUBLE_TAP -> {
@@ -674,6 +734,16 @@ class HudActivity : ComponentActivity() {
         phoneConnection.sendToPhone(message)
     }
 
+    private fun requestSessionList() {
+        Log.d(GlassesApp.TAG, "Requesting session list")
+        phoneConnection.sendToPhone("""{"type":"list_sessions"}""")
+    }
+
+    private fun switchToSession(sessionName: String) {
+        Log.d(GlassesApp.TAG, "Switching to session: $sessionName")
+        phoneConnection.sendToPhone("""{"type":"switch_session","session":"$sessionName"}""")
+    }
+
     /**
      * Parse terminal lines to detect Claude's current prompt.
      * Finds the bottom-most ❯ character which marks the current input.
@@ -817,6 +887,37 @@ class HudActivity : ComponentActivity() {
                     )
 
                     Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines, prompt: $detectedPrompt")
+                }
+                "sessions" -> {
+                    // Session list from server
+                    val sessionsArray = msg.optJSONArray("sessions")
+                    val currentSession = msg.optString("current", "")
+                    val sessions = mutableListOf<String>()
+                    if (sessionsArray != null) {
+                        for (i in 0 until sessionsArray.length()) {
+                            sessions.add(sessionsArray.optString(i, ""))
+                        }
+                    }
+
+                    val current = terminalState.value
+                    terminalState.value = current.copy(
+                        showSessionPicker = true,
+                        availableSessions = sessions,
+                        currentSession = currentSession,
+                        selectedSessionIndex = sessions.indexOf(currentSession).coerceAtLeast(0)
+                    )
+                    Log.d(GlassesApp.TAG, "Sessions: $sessions, current: $currentSession")
+                }
+                "session_switched" -> {
+                    // Confirmation that session was switched
+                    val session = msg.optString("session", "")
+                    val success = msg.optBoolean("success", false)
+                    Log.d(GlassesApp.TAG, "Session switched to $session: $success")
+
+                    val current = terminalState.value
+                    terminalState.value = current.copy(
+                        currentSession = if (success) session else current.currentSession
+                    )
                 }
                 else -> {
                     Log.d(GlassesApp.TAG, "Unknown message type: $type")
