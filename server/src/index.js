@@ -386,10 +386,22 @@ class ClaudeTerminalServer {
 
   sendToTmux(text) {
     try {
-      // Escape special characters for tmux
-      const escaped = text.replace(/'/g, "'\\''");
-      console.log(`Sending to tmux: "${escaped}"`);
-      execSync(`tmux send-keys -t ${this.sessionName} '${escaped}'`);
+      console.log(`Sending to tmux (${text.length} chars): "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
+
+      // For long text, use tmux buffer to avoid command line length limits
+      if (text.length > 1000) {
+        // Write to temp file, load into tmux buffer, paste
+        const tempFile = join(this.tempDir, `input-${Date.now()}.txt`);
+        writeFileSync(tempFile, text);
+        execSync(`tmux load-buffer -b claude-input "${tempFile}"`);
+        execSync(`tmux paste-buffer -b claude-input -t ${this.sessionName}`);
+        unlinkSync(tempFile);
+      } else {
+        // For short text, use send-keys with -l (literal) flag
+        // Escape single quotes for shell
+        const escaped = text.replace(/'/g, "'\\''");
+        execSync(`tmux send-keys -t ${this.sessionName} -l '${escaped}'`);
+      }
       // Force a capture after sending
       setTimeout(() => this.captureOutput(), 50);
     } catch (e) {

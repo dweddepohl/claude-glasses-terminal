@@ -117,9 +117,12 @@ fun MainScreen() {
                     }
                     "voice_input" -> {
                         val text = json.optString("text", "")
-                        android.util.Log.d("MainScreen", "Received voice input from glasses: $text")
+                        android.util.Log.d("MainScreen", "Received voice input from glasses (${text.length} chars): ${text.take(100)}")
                         if (text.isNotEmpty()) {
+                            android.util.Log.d("MainScreen", "Forwarding voice input to server...")
                             terminalClient.sendInput(text)
+                        } else {
+                            android.util.Log.w("MainScreen", "Voice input was empty, not sending")
                         }
                     }
                     "list_sessions" -> {

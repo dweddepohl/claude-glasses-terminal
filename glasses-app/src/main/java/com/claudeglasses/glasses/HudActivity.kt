@@ -696,15 +696,15 @@ class HudActivity : ComponentActivity() {
     private fun handleVoiceResult(result: GlassesVoiceHandler.VoiceResult) {
         when (result) {
             is GlassesVoiceHandler.VoiceResult.Text -> {
-                Log.d(GlassesApp.TAG, "Voice input text: ${result.text}")
+                Log.d(GlassesApp.TAG, "Voice input text (${result.text.length} chars): ${result.text.take(100)}")
                 // Send text directly to server
                 sendVoiceInput(result.text)
-                // Focus on INPUT area to show the result
+                // Focus on INPUT area at AREA_FOCUSED level so TAP immediately sends Enter
                 val current = terminalState.value
                 val focus = current.focus
                 updateFocus(focus.copy(
                     focusedArea = FocusArea.INPUT,
-                    level = FocusLevel.AREA_SELECT
+                    level = FocusLevel.AREA_FOCUSED  // Stay focused so TAP = Enter
                 ))
             }
             is GlassesVoiceHandler.VoiceResult.Command -> {
@@ -730,9 +730,13 @@ class HudActivity : ComponentActivity() {
 
     private fun sendVoiceInput(text: String) {
         // Send voice input to phone app for forwarding to server
-        val escapedText = text.replace("\"", "\\\"").replace("\n", "\\n")
-        val message = """{"type":"voice_input","text":"$escapedText"}"""
-        Log.d(GlassesApp.TAG, "Sending voice input to phone: $message")
+        // Use JSONObject for proper escaping of all special characters
+        val json = JSONObject().apply {
+            put("type", "voice_input")
+            put("text", text)
+        }
+        val message = json.toString()
+        Log.d(GlassesApp.TAG, "Sending voice input to phone (${text.length} chars): ${text.take(50).replace("\n", "\\n")}")
         phoneConnection.sendToPhone(message)
     }
 
@@ -881,22 +885,45 @@ class HudActivity : ComponentActivity() {
                     }
 
                     val current = terminalState.value
-                    // Always auto-scroll to bottom on new content
-                    val newScrollPosition = maxOf(0, lines.size - 1)
                     // Parse prompt from terminal lines
                     val detectedPrompt = parsePrompt(lines)
+                    // Find the prompt line index for highlighting
+                    val promptLineIndex = lines.indexOfLast { line ->
+                        line.trimStart().startsWith("❯") || line.contains("❯")
+                    }
+
+                    // Only auto-scroll if:
+                    // 1. Line count increased (new content added, not just changed)
+                    // 2. User is NOT actively scrolling (in CONTENT area at AREA_FOCUSED level)
+                    val lineCountIncreased = lines.size > current.lines.size
+                    val userIsScrolling = current.focus.focusedArea == FocusArea.CONTENT &&
+                                          current.focus.level == FocusLevel.AREA_FOCUSED
+                    val shouldAutoScroll = lineCountIncreased && !userIsScrolling
+
+                    val newScrollPosition = if (shouldAutoScroll) {
+                        maxOf(0, lines.size - 1)
+                    } else {
+                        // Keep current scroll position, but clamp to valid range
+                        current.scrollPosition.coerceIn(0, maxOf(0, lines.size - 1))
+                    }
+                    val newScrollTrigger = if (shouldAutoScroll) {
+                        current.scrollTrigger + 1
+                    } else {
+                        current.scrollTrigger
+                    }
 
                     terminalState.value = current.copy(
                         lines = lines,
                         lineColors = lineColors,
                         cursorLine = cursorPos,
+                        promptLineIndex = promptLineIndex,
                         scrollPosition = newScrollPosition,
-                        scrollTrigger = current.scrollTrigger + 1,
+                        scrollTrigger = newScrollTrigger,
                         isConnected = true,
                         detectedPrompt = detectedPrompt
                     )
 
-                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines, ${lineColors.count { it != LineColorType.NORMAL }} colored")
+                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines (was ${current.lines.size}), promptLine=$promptLineIndex, autoScroll=$shouldAutoScroll")
                 }
                 "sessions" -> {
                     // Session list from server

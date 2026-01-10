@@ -178,9 +178,14 @@ class TerminalClient {
      * Send text input to the terminal
      */
     fun sendInput(text: String) {
-        val message = """{"type":"input","text":"$text"}"""
+        // Use JSONObject for proper escaping of all special characters
+        val json = JSONObject().apply {
+            put("type", "input")
+            put("text", text)
+        }
+        val message = json.toString()
         webSocket?.send(message)
-        Log.d(TAG, "Sent input: $text")
+        Log.d(TAG, "Sent input (${text.length} chars): ${text.take(50).replace("\n", "\\n")}")
     }
 
     /**
