@@ -91,7 +91,8 @@ enum class QuickCommand(val icon: String, val label: String, val key: String) {
     ENTER("↵", "ENTER", "enter"),
     SHIFT_TAB("⇤", "S-TAB", "shift_tab"),
     TAB("⇥", "TAB", "tab"),
-    CLEAR("⌫", "CLEAR", "ctrl_u")
+    CLEAR("⌫", "CLEAR", "ctrl_u"),
+    SESSION("◎", "SESSION", "list_sessions")
 }
 
 /**
@@ -142,7 +143,12 @@ data class TerminalState(
     val displaySize: HudDisplaySize = HudDisplaySize.NORMAL,
     val isConnected: Boolean = false,
     val voiceState: VoiceInputState = VoiceInputState.Idle,
-    val voiceText: String = ""
+    val voiceText: String = "",
+    // Session picker state
+    val showSessionPicker: Boolean = false,
+    val availableSessions: List<String> = emptyList(),
+    val currentSession: String = "",
+    val selectedSessionIndex: Int = 0
 ) {
     val visibleLines: Int get() = displaySize.rows
 
@@ -385,6 +391,20 @@ fun HudScreen(
             VoiceInputOverlay(
                 voiceState = state.voiceState,
                 voiceText = state.voiceText,
+                fontFamily = monoFontFamily
+            )
+        }
+
+        // Session picker overlay
+        AnimatedVisibility(
+            visible = state.showSessionPicker,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            SessionPickerOverlay(
+                sessions = state.availableSessions,
+                currentSession = state.currentSession,
+                selectedIndex = state.selectedSessionIndex,
                 fontFamily = monoFontFamily
             )
         }
@@ -1076,6 +1096,95 @@ private fun VoiceInputOverlay(
                     fontFamily = fontFamily
                 )
             }
+        }
+    }
+}
+
+/**
+ * Session picker overlay for switching between tmux sessions
+ */
+@Composable
+private fun SessionPickerOverlay(
+    sessions: List<String>,
+    currentSession: String,
+    selectedIndex: Int,
+    fontFamily: FontFamily,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.9f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(24.dp)
+        ) {
+            Text(
+                text = "SELECT SESSION",
+                color = HudColors.cyan,
+                fontSize = 16.sp,
+                fontFamily = fontFamily,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Session list with "New Session" option at the end
+            val allOptions = sessions + listOf("+ New Session")
+
+            allOptions.forEachIndexed { index, session ->
+                val isSelected = index == selectedIndex
+                val isCurrent = session == currentSession
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            if (isSelected) HudColors.green.copy(alpha = 0.3f)
+                            else Color.Transparent
+                        )
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isSelected) "▶" else " ",
+                            color = HudColors.green,
+                            fontSize = 14.sp,
+                            fontFamily = fontFamily
+                        )
+                        Text(
+                            text = session,
+                            color = if (isSelected) HudColors.green else HudColors.primaryText,
+                            fontSize = 14.sp,
+                            fontFamily = fontFamily,
+                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                    if (isCurrent) {
+                        Text(
+                            text = "●",
+                            color = HudColors.cyan,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "↑↓ Navigate  TAP Select  2×TAP Cancel",
+                color = HudColors.dimText,
+                fontSize = 10.sp,
+                fontFamily = fontFamily
+            )
         }
     }
 }

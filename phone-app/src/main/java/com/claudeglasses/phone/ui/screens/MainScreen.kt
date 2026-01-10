@@ -122,10 +122,27 @@ fun MainScreen() {
                             terminalClient.sendInput(text)
                         }
                     }
+                    "list_sessions" -> {
+                        android.util.Log.d("MainScreen", "Requesting session list for glasses")
+                        terminalClient.requestSessions()
+                    }
+                    "switch_session" -> {
+                        val session = json.optString("session", "")
+                        android.util.Log.d("MainScreen", "Switching to session: $session")
+                        if (session.isNotEmpty()) {
+                            terminalClient.switchSession(session)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("MainScreen", "Error parsing glasses message", e)
             }
+        }
+
+        // Forward session messages from server to glasses
+        terminalClient.onSessionMessage = { message ->
+            android.util.Log.d("MainScreen", "Forwarding session message to glasses")
+            glassesManager.sendRawMessage(message)
         }
     }
 

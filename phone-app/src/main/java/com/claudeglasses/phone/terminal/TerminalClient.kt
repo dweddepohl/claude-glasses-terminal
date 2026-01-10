@@ -34,6 +34,9 @@ class TerminalClient {
     private val _terminalLines = MutableStateFlow<List<TerminalLine>>(emptyList())
     val terminalLines: StateFlow<List<TerminalLine>> = _terminalLines.asStateFlow()
 
+    // Callback for session-related messages to forward to glasses
+    var onSessionMessage: ((String) -> Unit)? = null
+
     private val _scrollPosition = MutableStateFlow(0)
     val scrollPosition: StateFlow<Int> = _scrollPosition.asStateFlow()
 
@@ -125,6 +128,11 @@ class TerminalClient {
                         }
                     }
                 }
+                "sessions", "session_switched" -> {
+                    // Forward session messages to glasses
+                    Log.d(TAG, "Forwarding session message: $type")
+                    onSessionMessage?.invoke(json)
+                }
                 "error" -> {
                     val error = msg.optString("error", "Unknown error")
                     val currentLines = _terminalLines.value.toMutableList()
@@ -192,6 +200,24 @@ class TerminalClient {
         val message = """{"type":"image","data":"$base64Image"}"""
         webSocket?.send(message)
         Log.d(TAG, "Sent image (${base64Image.length} chars)")
+    }
+
+    /**
+     * Request list of available tmux sessions
+     */
+    fun requestSessions() {
+        val message = """{"type":"list_sessions"}"""
+        webSocket?.send(message)
+        Log.d(TAG, "Requested session list")
+    }
+
+    /**
+     * Switch to a different tmux session
+     */
+    fun switchSession(sessionName: String) {
+        val message = """{"type":"switch_session","session":"$sessionName"}"""
+        webSocket?.send(message)
+        Log.d(TAG, "Switching to session: $sessionName")
     }
 
     fun scrollUp(lines: Int = 10) {

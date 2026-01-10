@@ -206,6 +206,18 @@ class GlassesConnectionManager(private val context: Context) {
     }
 
     /**
+     * Send a raw JSON message to glasses (for forwarding server responses)
+     */
+    fun sendRawMessage(jsonMessage: String) {
+        if (_debugModeEnabled.value) {
+            debugServer?.sendToGlasses(jsonMessage)
+        } else {
+            // TODO: Use CXR-M SDK to send data
+        }
+        Log.d(TAG, "Sending raw message to glasses")
+    }
+
+    /**
      * Send a command to install APK on glasses
      */
     fun installApkOnGlasses(apkPath: String) {
