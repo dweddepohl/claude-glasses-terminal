@@ -173,9 +173,16 @@ class TerminalClient {
      * Send a special key command
      */
     fun sendKey(key: SpecialKey) {
-        val message = """{"type":"key","key":"${key.code}"}"""
+        sendKey(key.code)
+    }
+
+    /**
+     * Send a key by its string code (e.g., "up", "down", "enter", "escape")
+     */
+    fun sendKey(keyCode: String) {
+        val message = """{"type":"key","key":"$keyCode"}"""
         webSocket?.send(message)
-        Log.d(TAG, "Sent key: ${key.code}")
+        Log.d(TAG, "Sent key: $keyCode")
     }
 
     /**
