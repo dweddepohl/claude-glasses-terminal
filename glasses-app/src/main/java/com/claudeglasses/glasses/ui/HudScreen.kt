@@ -10,8 +10,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import com.claudeglasses.glasses.R
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,7 +65,11 @@ data class TerminalState(
 @Composable
 fun HudScreen(state: TerminalState) {
     val listState = rememberLazyListState()
-    val fontSize = state.displaySize.fontSizeSp.sp
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+
+    // Use JetBrains Mono for proper monospace box-drawing characters
+    val monoFontFamily = remember { FontFamily(Font(R.font.jetbrains_mono)) }
 
     // Auto-scroll when position changes
     LaunchedEffect(state.scrollPosition) {
@@ -69,12 +78,30 @@ fun HudScreen(state: TerminalState) {
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)  // Pure black for HUD
-            .padding(horizontal = 40.dp, vertical = 20.dp)  // Keep content centered
+            .padding(horizontal = 16.dp, vertical = 12.dp)  // Reduced padding for more space
     ) {
+        // Calculate font size to fit 65 columns in available width
+        val targetColumns = 65
+        val referenceText = "M".repeat(targetColumns)
+        val referenceFontSize = 12.sp
+
+        val fontSize = remember(maxWidth, monoFontFamily) {
+            val referenceStyle = TextStyle(
+                fontFamily = monoFontFamily,
+                fontSize = referenceFontSize,
+                letterSpacing = 0.sp
+            )
+            val measuredWidth = textMeasurer.measure(referenceText, referenceStyle).size.width
+            val availableWidthPx = with(density) { maxWidth.toPx() }
+            // Scale to fit with tiny margin for rounding errors (1%)
+            val scaledSize = referenceFontSize.value * (availableWidthPx / measuredWidth) * 0.99f
+            scaledSize.coerceIn(6f, 24f).sp
+        }
+
         Column(
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -84,10 +111,11 @@ fun HudScreen(state: TerminalState) {
                 mode = state.mode,
                 lineInfo = "${state.scrollPosition + 1}/${state.lines.size}",
                 isConnected = state.isConnected,
-                displaySize = state.displaySize
+                displaySize = state.displaySize,
+                fontFamily = monoFontFamily
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
             // Terminal content
             Box(
@@ -101,7 +129,7 @@ fun HudScreen(state: TerminalState) {
                         text = "Waiting for connection...",
                         color = HudColors.dimText,
                         fontSize = fontSize,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = monoFontFamily,
                         modifier = Modifier.align(Alignment.Center)
                     )
                 } else {
@@ -114,17 +142,18 @@ fun HudScreen(state: TerminalState) {
                                 text = line,
                                 isCurrentLine = index == state.cursorLine,
                                 lineNumber = index + 1,
-                                fontSize = fontSize
+                                fontSize = fontSize,
+                                fontFamily = monoFontFamily
                             )
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
             // Gesture hints at bottom
-            GestureHints(mode = state.mode, displaySize = state.displaySize)
+            GestureHints(mode = state.mode, displaySize = state.displaySize, fontFamily = monoFontFamily)
         }
     }
 }
@@ -134,7 +163,8 @@ private fun StatusBar(
     mode: TerminalState.Mode,
     lineInfo: String,
     isConnected: Boolean,
-    displaySize: HudDisplaySize
+    displaySize: HudDisplaySize,
+    fontFamily: FontFamily
 ) {
     val statusFontSize = (displaySize.fontSizeSp - 2).coerceAtLeast(8).sp
 
@@ -154,7 +184,7 @@ private fun StatusBar(
                 TerminalState.Mode.COMMAND -> HudColors.green
             },
             fontSize = statusFontSize,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = fontFamily,
             fontWeight = FontWeight.Bold
         )
 
@@ -170,7 +200,7 @@ private fun StatusBar(
             text = lineInfo,
             color = HudColors.dimText,
             fontSize = statusFontSize,
-            fontFamily = FontFamily.Monospace
+            fontFamily = fontFamily
         )
     }
 }
@@ -180,44 +210,23 @@ private fun TerminalLine(
     text: String,
     isCurrentLine: Boolean,
     lineNumber: Int,
-    fontSize: androidx.compose.ui.unit.TextUnit
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    fontFamily: FontFamily
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 1.dp)
-    ) {
-        // Line number (dim)
-        Text(
-            text = "%3d ".format(lineNumber),
-            color = HudColors.dimText,
-            fontSize = fontSize,
-            fontFamily = FontFamily.Monospace
-        )
-
-        // Content
-        Text(
-            text = text,
-            color = if (isCurrentLine) HudColors.cyan else HudColors.primaryText,
-            fontSize = fontSize,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.weight(1f)
-        )
-
-        // Cursor indicator for current line
-        if (isCurrentLine) {
-            Text(
-                text = "█",
-                color = HudColors.green,
-                fontSize = fontSize,
-                fontFamily = FontFamily.Monospace
-            )
-        }
-    }
+    // Simple text display - no line numbers for maximum content width
+    Text(
+        text = text,
+        color = if (isCurrentLine) HudColors.cyan else HudColors.primaryText,
+        fontSize = fontSize,
+        fontFamily = fontFamily,
+        lineHeight = fontSize,  // Match line height to font size for tight spacing
+        letterSpacing = 0.sp,   // No extra spacing between characters
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @Composable
-private fun GestureHints(mode: TerminalState.Mode, displaySize: HudDisplaySize) {
+private fun GestureHints(mode: TerminalState.Mode, displaySize: HudDisplaySize, fontFamily: FontFamily) {
     val hints = when (mode) {
         TerminalState.Mode.SCROLL -> "↑↓ Scroll  ●● Mode  ⟳ ESC"
         TerminalState.Mode.NAVIGATE -> "↑↓ Arrow  ●● Mode  ⟳ ESC"
@@ -229,7 +238,7 @@ private fun GestureHints(mode: TerminalState.Mode, displaySize: HudDisplaySize) 
         text = hints,
         color = HudColors.dimText,
         fontSize = hintFontSize,
-        fontFamily = FontFamily.Monospace,
+        fontFamily = fontFamily,
         textAlign = TextAlign.Center,
         modifier = Modifier.fillMaxWidth()
     )

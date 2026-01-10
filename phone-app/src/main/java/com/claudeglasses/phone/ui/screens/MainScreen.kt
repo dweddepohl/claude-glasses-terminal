@@ -21,7 +21,21 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomAppBar
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +90,30 @@ fun MainScreen() {
     LaunchedEffect(terminalLines.size) {
         if (terminalLines.isNotEmpty()) {
             listState.animateScrollToItem(terminalLines.size - 1)
+        }
+    }
+
+    // Forward terminal updates to glasses (in debug mode)
+    LaunchedEffect(terminalLines) {
+        if (terminalLines.isNotEmpty()) {
+            val lines = terminalLines.map { it.content }
+            glassesManager.sendToGlasses(
+                lines = lines,
+                cursorPosition = terminalLines.size - 1,
+                mode = "SCROLL"
+            )
+        }
+    }
+
+    // Send current terminal state when glasses connect
+    LaunchedEffect(glassesState) {
+        if (glassesState is GlassesConnectionManager.ConnectionState.Connected && terminalLines.isNotEmpty()) {
+            val lines = terminalLines.map { it.content }
+            glassesManager.sendToGlasses(
+                lines = lines,
+                cursorPosition = terminalLines.size - 1,
+                mode = "SCROLL"
+            )
         }
     }
 
@@ -187,7 +225,7 @@ fun MainScreen() {
                     .background(Color(0xFF1E1E1E))
                     .padding(horizontal = 4.dp)  // Minimal horizontal padding
             ) {
-                val terminalCols = 50  // Match server's DEFAULT_COLS
+                val terminalCols = 65  // Match server's DEFAULT_COLS
                 val density = LocalDensity.current
                 val textMeasurer = rememberTextMeasurer()
 
@@ -204,13 +242,14 @@ fun MainScreen() {
                 val terminalFontSize = remember(maxWidth) {
                     val referenceStyle = TextStyle(
                         fontFamily = monoFontFamily,
-                        fontSize = referenceFontSize
+                        fontSize = referenceFontSize,
+                        letterSpacing = 0.sp
                     )
                     val measuredWidth = textMeasurer.measure(referenceText, referenceStyle).size.width
                     val availableWidthPx = with(density) { maxWidth.toPx() }
 
-                    // Scale with 5% safety margin to ensure fit
-                    val scaledSize = referenceFontSize.value * (availableWidthPx / measuredWidth) * 0.95f
+                    // Scale with 1% safety margin for rounding errors
+                    val scaledSize = referenceFontSize.value * (availableWidthPx / measuredWidth) * 0.99f
                     scaledSize.coerceIn(6f, 20f).sp
                 }
 
@@ -218,6 +257,7 @@ fun MainScreen() {
                 val terminalTextStyle = TextStyle(
                     fontFamily = monoFontFamily,
                     fontSize = terminalFontSize,
+                    letterSpacing = 0.sp,
                     lineHeight = 1.0.em,  // Exactly 1x font size, no extra spacing
                     lineHeightStyle = LineHeightStyle(
                         alignment = LineHeightStyle.Alignment.Center,
@@ -257,11 +297,22 @@ fun MainScreen() {
         }
     }
 
+    // Debug mode state
+    val debugModeEnabled by glassesManager.debugModeEnabled.collectAsState()
+
     // Settings dialog
     if (showSettings) {
         SettingsDialog(
             serverUrl = serverUrl,
             onServerUrlChange = { serverUrl = it },
+            debugModeEnabled = debugModeEnabled,
+            onDebugModeChange = { enabled ->
+                if (enabled) {
+                    glassesManager.enableDebugMode()
+                } else {
+                    glassesManager.disableDebugMode()
+                }
+            },
             onDismiss = { showSettings = false },
             onInstallGlassesApp = {
                 // TODO: Trigger APK installation on glasses
@@ -417,6 +468,8 @@ fun QuickActionBar(
 fun SettingsDialog(
     serverUrl: String,
     onServerUrlChange: (String) -> Unit,
+    debugModeEnabled: Boolean,
+    onDebugModeChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onInstallGlassesApp: () -> Unit
 ) {
@@ -431,6 +484,38 @@ fun SettingsDialog(
                     label = { Text("Server URL") },
                     modifier = Modifier.fillMaxWidth()
                 )
+                Spacer(Modifier.height(16.dp))
+
+                // Debug mode toggle for emulator testing
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Debug Mode", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Use WebSocket instead of Bluetooth for glasses",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+                    Switch(
+                        checked = debugModeEnabled,
+                        onCheckedChange = onDebugModeChange
+                    )
+                }
+
+                if (debugModeEnabled) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Glasses app connects to port 8081.\n" +
+                        "Run: adb forward tcp:8081 tcp:8081",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = onInstallGlassesApp,

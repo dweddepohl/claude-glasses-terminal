@@ -1,9 +1,14 @@
 package com.claudeglasses.glasses
 
 import android.os.Bundle
+import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
@@ -16,8 +21,21 @@ import com.claudeglasses.glasses.ui.TerminalState
 import com.claudeglasses.glasses.ui.theme.GlassesHudTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+import com.claudeglasses.glasses.BuildConfig
 
 class HudActivity : ComponentActivity() {
+
+    companion object {
+        // Enable debug mode for emulator testing (set to true when building for emulator)
+        // When true, connects via WebSocket to phone app instead of Bluetooth
+        val DEBUG_MODE = BuildConfig.DEBUG
+
+        // Debug connection settings (10.0.2.2 is host from Android emulator)
+        const val DEBUG_HOST = "10.0.2.2"
+        const val DEBUG_PORT = 8081
+    }
 
     private val terminalState = MutableStateFlow(TerminalState())
     private lateinit var gestureHandler: GestureHandler
@@ -29,13 +47,27 @@ class HudActivity : ComponentActivity() {
         // Keep screen on while app is active
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        // Enable immersive fullscreen mode (hide system bars)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+
         gestureHandler = GestureHandler { gesture ->
             handleGesture(gesture)
         }
 
-        phoneConnection = PhoneConnectionService(this) { message ->
-            handlePhoneMessage(message)
-        }
+        // Create phone connection service - uses WebSocket in debug mode, Bluetooth otherwise
+        phoneConnection = PhoneConnectionService(
+            context = this,
+            onMessageReceived = { message -> handlePhoneMessage(message) },
+            debugMode = DEBUG_MODE,
+            debugHost = DEBUG_HOST,
+            debugPort = DEBUG_PORT
+        )
+
+        Log.i(GlassesApp.TAG, "HudActivity created, debugMode=$DEBUG_MODE")
 
         setContent {
             GlassesHudTheme {
@@ -47,6 +79,17 @@ class HudActivity : ComponentActivity() {
         // Start listening for phone connection
         lifecycleScope.launch {
             phoneConnection.startListening()
+        }
+
+        // Observe connection state and update UI
+        lifecycleScope.launch {
+            phoneConnection.connectionState.collect { state ->
+                val isConnected = state is PhoneConnectionService.ConnectionState.Connected
+                val current = terminalState.value
+                if (current.isConnected != isConnected) {
+                    terminalState.value = current.copy(isConnected = isConnected)
+                }
+            }
         }
     }
 
@@ -118,19 +161,39 @@ class HudActivity : ComponentActivity() {
 
     private fun handlePhoneMessage(json: String) {
         try {
-            // Parse message from phone and update terminal state
-            // Expected: {"type":"terminal_update","lines":[...],"mode":"...","scroll":0}
+            val msg = JSONObject(json)
+            val type = msg.optString("type", "")
 
-            // TODO: Proper JSON parsing
-            // For now, just add as a line
-            val current = terminalState.value
-            val newLines = current.lines + json
-            terminalState.value = current.copy(
-                lines = newLines,
-                scrollPosition = maxOf(0, newLines.size - current.visibleLines)
-            )
+            when (type) {
+                "terminal_update" -> {
+                    // Parse terminal update from phone app
+                    val linesArray = msg.optJSONArray("lines")
+                    val cursorPos = msg.optInt("cursorPosition", 0)
+                    val mode = msg.optString("mode", "SCROLL")
+
+                    val lines = mutableListOf<String>()
+                    if (linesArray != null) {
+                        for (i in 0 until linesArray.length()) {
+                            lines.add(linesArray.optString(i, ""))
+                        }
+                    }
+
+                    val current = terminalState.value
+                    terminalState.value = current.copy(
+                        lines = lines,
+                        cursorLine = cursorPos,
+                        scrollPosition = maxOf(0, lines.size - current.visibleLines),
+                        isConnected = true
+                    )
+
+                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines")
+                }
+                else -> {
+                    Log.d(GlassesApp.TAG, "Unknown message type: $type")
+                }
+            }
         } catch (e: Exception) {
-            android.util.Log.e(GlassesApp.TAG, "Error parsing message", e)
+            Log.e(GlassesApp.TAG, "Error parsing message: ${json.take(100)}", e)
         }
     }
 
