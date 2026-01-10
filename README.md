@@ -1,6 +1,15 @@
-# Claude Code for Rokid AI Glasse 👾x🕶️ 
+# Claude Code for Rokid AI Glasses 👾x🕶️
 
 A terminal interface for Claude Code on Rokid Glasses. View and interact with Claude Code through your AR glasses using voice commands and gestures.
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/glasses-hud.png" width="400" alt="Glasses HUD Display">
+  <img src="docs/images/phone-app.png" width="200" alt="Phone App">
+</p>
+
+*Left: HUD view on glasses (emulator) | Right: Phone companion app*
 
 ## Architecture
 
