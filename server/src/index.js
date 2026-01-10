@@ -241,6 +241,7 @@ class ClaudeTerminalServer {
       'backspace': 'BSpace',
       'ctrl_c': 'C-c',
       'ctrl_d': 'C-d',
+      'ctrl_u': 'C-u',
       'page_up': 'PageUp',
       'page_down': 'PageDown'
     };
