@@ -85,7 +85,7 @@ const DEFAULT_SESSION_NAME = 'claude-glasses';
 
 // Terminal configuration optimized for glasses HUD display
 // Rokid glasses have a narrow monochrome display
-const DEFAULT_COLS = 65;  // Narrower for HUD readability
+const DEFAULT_COLS = 67;  // Narrower for HUD readability
 const DEFAULT_ROWS = 15;  // Fewer rows for glasses viewport
 
 class ClaudeTerminalServer {
