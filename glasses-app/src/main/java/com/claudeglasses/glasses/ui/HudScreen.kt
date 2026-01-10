@@ -148,6 +148,7 @@ data class TerminalState(
     val scrollPosition: Int = 0,
     val scrollTrigger: Int = 0,
     val cursorLine: Int = 0,
+    val promptLineIndex: Int = -1,  // Line index of the ❯ prompt (for highlighting)
     val focus: FocusState = FocusState(),
     val detectedPrompt: DetectedPrompt = DetectedPrompt.None,
     val displaySize: HudDisplaySize = HudDisplaySize.NORMAL,
@@ -333,6 +334,8 @@ fun HudScreen(
                 lineColors = state.lineColors,
                 listState = listState,
                 cursorLine = state.cursorLine,
+                promptLineIndex = state.promptLineIndex,
+                showPromptHighlight = inputFocused,  // Only highlight prompt when INPUT is active
                 contentMode = state.contentMode,
                 selectedLine = state.focus.selectedLine,
                 cursorPosition = state.focus.cursorPosition,
@@ -432,6 +435,8 @@ private fun ContentArea(
     lineColors: List<LineColorType>,
     listState: androidx.compose.foundation.lazy.LazyListState,
     cursorLine: Int,
+    promptLineIndex: Int,
+    showPromptHighlight: Boolean,
     contentMode: ContentMode,
     selectedLine: Int,
     cursorPosition: Int,
@@ -467,6 +472,8 @@ private fun ContentArea(
                         else -> false
                     }
                     val isCurrentLine = index == cursorLine
+                    // Only show prompt highlight when INPUT area is active
+                    val isPromptLine = index == promptLineIndex && showPromptHighlight
                     val lineColor = lineColors.getOrNull(index) ?: LineColorType.NORMAL
 
                     ContentLine(
@@ -474,6 +481,7 @@ private fun ContentArea(
                         lineIndex = index,
                         lineColor = lineColor,
                         isCurrentLine = isCurrentLine,
+                        isPromptLine = isPromptLine,
                         isHighlighted = isHighlighted,
                         contentMode = contentMode,
                         cursorPosition = if (isHighlighted) cursorPosition else null,
@@ -493,6 +501,7 @@ private fun ContentLine(
     lineIndex: Int,
     lineColor: LineColorType,
     isCurrentLine: Boolean,
+    isPromptLine: Boolean,
     isHighlighted: Boolean,
     contentMode: ContentMode,
     cursorPosition: Int?,
@@ -501,8 +510,10 @@ private fun ContentLine(
     fontFamily: FontFamily
 ) {
     // Use server-provided line color for monochrome styling
+    // Prompt line gets special highlight to show connection with input area
     val backgroundColor = when {
         isHighlighted -> HudColors.green.copy(alpha = 0.3f)
+        isPromptLine -> HudColors.yellow.copy(alpha = 0.15f)  // Subtle yellow highlight for prompt
         lineColor == LineColorType.ADDITION -> HudColors.green.copy(alpha = 0.15f)
         lineColor == LineColorType.DELETION -> Color.Transparent
         else -> Color.Transparent
@@ -510,6 +521,7 @@ private fun ContentLine(
 
     val textColor = when {
         isHighlighted -> HudColors.green
+        isPromptLine -> HudColors.yellow  // Yellow for prompt line to match INPUT area color
         isCurrentLine -> HudColors.cyan
         lineColor == LineColorType.ADDITION -> HudColors.green  // Bright green for additions
         lineColor == LineColorType.DELETION -> HudColors.dimText  // Dim for deletions
