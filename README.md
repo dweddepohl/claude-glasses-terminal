@@ -83,7 +83,7 @@ npm install
 npm start
 ```
 
-The server will start on port 8080. Use Tailscale or another VPN to expose it to your phone on the go.
+The server will start on port 8080 with a 65×15 terminal (optimized for glasses HUD). Use Tailscale or another VPN to expose it to your phone on the go.
 
 ### 2. Phone App
 
@@ -133,12 +133,43 @@ Swipe Left/Right: Tab / Shift-Tab
 
 ## HUD Display
 
-The glasses display is optimized for the 480×398 pixel monochrome Micro-LED:
-- Pure black background (blends with real world)
+The glasses display is optimized for the Rokid AR Lite (49g green waveguide) 640×480 pixel display:
+- Pure black background (blends with real world on monochrome display)
 - Neon green/cyan text (high visibility)
 - JetBrains Mono font for proper box-drawing character alignment
-- Auto-scaling font size to fit terminal width without wrapping
-- ~50 characters × 15 lines visible (configurable presets available)
+- Dynamic font scaling to fit 65 columns without wrapping
+- ~65 characters × 15 lines visible
+
+## Emulator Testing (Debug Mode)
+
+For development without physical glasses, you can test using two Android emulators:
+
+### Setup
+
+1. **Create a glasses emulator** with these specs to match Rokid display:
+   - Resolution: 640×480
+   - Screen size: 5.0 inches (gives 160 dpi, so 1dp = 1px)
+
+2. **Start the phone emulator** first, then the glasses emulator
+
+3. **Debug mode** is enabled automatically in debug builds:
+   - Phone app starts a WebSocket server on port 8081
+   - Glasses app connects to `10.0.2.2:8081` (host machine from emulator)
+
+### Running
+
+```bash
+# Terminal 1: Start the server
+cd server && npm start
+
+# Terminal 2: Run phone app on first emulator
+./gradlew :phone-app:installDebug
+
+# Terminal 3: Run glasses app on second emulator
+./gradlew :glasses-app:installDebug
+```
+
+The glasses emulator will connect to the phone emulator via WebSocket, bypassing Bluetooth.
 
 ## Development
 
@@ -174,6 +205,7 @@ repositories {
 - [ ] Add haptic feedback for gestures
 - [ ] Support for Claude's streaming responses
 - [ ] Offline mode with cached context
+- [ ] Voice command integration
 
 ## License
 
