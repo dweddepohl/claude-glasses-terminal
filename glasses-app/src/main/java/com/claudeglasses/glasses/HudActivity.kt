@@ -1,14 +1,12 @@
 package com.claudeglasses.glasses
 
 import android.Manifest
-import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
-import android.widget.EditText
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,6 +53,10 @@ class HudActivity : ComponentActivity() {
     private lateinit var gestureHandler: GestureHandler
     private lateinit var phoneConnection: PhoneConnectionService
     private lateinit var voiceHandler: GlassesVoiceHandler
+
+    // Debug keyboard input mode - captures keys as simulated voice input
+    private var isCapturingKeyboardInput = false
+    private var keyboardInputBuffer = StringBuilder()
 
     // Permission launcher for audio recording
     private val audioPermissionLauncher = registerForActivityResult(
@@ -169,6 +171,11 @@ class HudActivity : ComponentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        // If capturing keyboard input for simulated voice, handle specially
+        if (isCapturingKeyboardInput) {
+            return handleKeyboardCapture(keyCode, event)
+        }
+
         // Handle hardware buttons on glasses and keyboard for emulator testing
         when (keyCode) {
             // Forward swipe (towards eyes) - volume up or arrow up
@@ -202,11 +209,14 @@ class HudActivity : ComponentActivity() {
                 handleGesture(Gesture.DOUBLE_TAP)
                 return true
             }
-            KeyEvent.KEYCODE_T -> {
-                // T = type text input (simulates voice input for emulator testing)
+            else -> {
+                // Any other key starts keyboard capture mode with that character
                 if (DEBUG_MODE) {
-                    showDebugTextInput()
-                    return true
+                    val char = event?.unicodeChar?.toChar()
+                    if (char != null && char.code > 0 && !char.isISOControl()) {
+                        startKeyboardCapture(char)
+                        return true
+                    }
                 }
             }
         }
@@ -214,100 +224,94 @@ class HudActivity : ComponentActivity() {
     }
 
     /**
-     * Show a dialog for typing text input to simulate voice recognition.
-     * Only available in DEBUG_MODE for emulator testing.
+     * Start capturing keyboard input as simulated voice recognition.
+     * Shows voice overlay and captures typed characters until Enter/Escape.
+     * @param initialChar Optional first character to include in the buffer
      */
-    private fun showDebugTextInput() {
-        // Show voice listening state
+    private fun startKeyboardCapture(initialChar: Char? = null) {
+        isCapturingKeyboardInput = true
+        keyboardInputBuffer.clear()
+        if (initialChar != null) {
+            keyboardInputBuffer.append(initialChar)
+        }
         terminalState.value = terminalState.value.copy(
-            voiceState = VoiceInputState.Listening,
-            voiceText = ""
+            voiceState = if (initialChar != null) VoiceInputState.Recognizing else VoiceInputState.Listening,
+            voiceText = initialChar?.toString() ?: ""
         )
+        Log.d(GlassesApp.TAG, "Started keyboard capture for voice simulation")
+    }
 
-        // Temporarily show system bars to fix window focus issue
-        val insetsController = WindowInsetsControllerCompat(window, window.decorView)
-        insetsController.show(WindowInsetsCompat.Type.systemBars())
+    /**
+     * Handle key events while in keyboard capture mode.
+     * Enter submits, Escape cancels, other keys are captured as text.
+     */
+    private fun handleKeyboardCapture(keyCode: Int, event: KeyEvent?): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_ENTER -> {
+                // Submit the captured text
+                val text = keyboardInputBuffer.toString().trim()
+                isCapturingKeyboardInput = false
+                keyboardInputBuffer.clear()
 
-        val editText = EditText(this).apply {
-            hint = "Type voice input..."
-            setSingleLine(false)
-            maxLines = 3
-        }
-
-        val restoreImmersiveMode = {
-            // Re-enable immersive mode after dialog closes
-            insetsController.hide(WindowInsetsCompat.Type.systemBars())
-            insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Simulate Voice Input")
-            .setView(editText)
-            .setPositiveButton("Send") { _, _ ->
-                val text = editText.text.toString().trim()
-                restoreImmersiveMode()
                 if (text.isNotEmpty()) {
                     voiceHandler.simulateVoiceInput(text) { result ->
                         handleVoiceResult(result)
                     }
                 } else {
-                    // Reset to idle if empty
                     terminalState.value = terminalState.value.copy(
                         voiceState = VoiceInputState.Idle,
                         voiceText = ""
                     )
                 }
+                return true
             }
-            .setNegativeButton("Cancel") { _, _ ->
-                restoreImmersiveMode()
-                // Reset to idle
+            KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_BACK -> {
+                // Cancel keyboard capture
+                isCapturingKeyboardInput = false
+                keyboardInputBuffer.clear()
                 terminalState.value = terminalState.value.copy(
                     voiceState = VoiceInputState.Idle,
                     voiceText = ""
                 )
+                Log.d(GlassesApp.TAG, "Cancelled keyboard capture")
+                return true
             }
-            .setOnCancelListener {
-                restoreImmersiveMode()
-                // Reset to idle if dismissed
-                terminalState.value = terminalState.value.copy(
-                    voiceState = VoiceInputState.Idle,
-                    voiceText = ""
-                )
+            KeyEvent.KEYCODE_DEL -> {
+                // Backspace - remove last character
+                if (keyboardInputBuffer.isNotEmpty()) {
+                    keyboardInputBuffer.deleteCharAt(keyboardInputBuffer.length - 1)
+                    updateKeyboardCaptureDisplay()
+                }
+                return true
             }
-            .create()
-
-        // Update partial text as user types (simulating live transcription)
-        editText.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) {
-                val text = s?.toString() ?: ""
-                voiceHandler.updateSimulatedText(text)
+            KeyEvent.KEYCODE_SPACE -> {
+                // Space character
+                keyboardInputBuffer.append(' ')
+                updateKeyboardCaptureDisplay()
+                return true
             }
-        })
-
-        dialog.show()
-
-        // Ensure dialog window has focus and can receive keyboard input
-        dialog.window?.apply {
-            clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
-            clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
-            setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-            // Make sure the window can receive input
-            setFlags(
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-            )
-            decorView.requestFocus()
+            else -> {
+                // Try to get the character for this key
+                val char = event?.unicodeChar?.toChar()
+                if (char != null && char.code > 0 && !char.isISOControl()) {
+                    keyboardInputBuffer.append(char)
+                    updateKeyboardCaptureDisplay()
+                    return true
+                }
+            }
         }
+        return true // Consume all keys while capturing
+    }
 
-        // Request focus on the EditText with a slight delay to ensure window is ready
-        editText.postDelayed({
-            editText.requestFocus()
-            // Show keyboard
-            val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-            imm.showSoftInput(editText, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
-        }, 100)
+    /**
+     * Update the voice overlay display with current keyboard input.
+     */
+    private fun updateKeyboardCaptureDisplay() {
+        val text = keyboardInputBuffer.toString()
+        terminalState.value = terminalState.value.copy(
+            voiceState = if (text.isEmpty()) VoiceInputState.Listening else VoiceInputState.Recognizing,
+            voiceText = text
+        )
     }
 
     // ============== Hierarchical Focus-Based Gesture Handling ==============
@@ -665,7 +669,9 @@ class HudActivity : ComponentActivity() {
     private fun sendVoiceInput(text: String) {
         // Send voice input to phone app for forwarding to server
         val escapedText = text.replace("\"", "\\\"").replace("\n", "\\n")
-        phoneConnection.sendToPhone("""{"type":"voice_input","text":"$escapedText"}""")
+        val message = """{"type":"voice_input","text":"$escapedText"}"""
+        Log.d(GlassesApp.TAG, "Sending voice input to phone: $message")
+        phoneConnection.sendToPhone(message)
     }
 
     /**
