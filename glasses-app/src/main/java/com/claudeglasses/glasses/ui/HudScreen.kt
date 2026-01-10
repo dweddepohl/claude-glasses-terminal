@@ -347,23 +347,32 @@ fun HudScreen(
                 modifier = Modifier.weight(1f)
             )
 
-            Spacer(modifier = Modifier.height(4.dp))
+            // Calculate if at bottom (used for hiding input area and showing hints)
+            val isAtBottom = state.scrollPosition >= maxOf(0, state.lines.size - state.visibleLines)
 
-            // INPUT AREA - Claude's prompts (fixed height, collapsible when None)
-            InputArea(
-                detectedPrompt = state.detectedPrompt,
-                pendingInput = state.focus.pendingInput,
-                selectedOptionIndex = state.focus.inputOptionIndex,
-                displaySize = state.displaySize,
-                fontFamily = monoFontFamily,
-                alpha = inputAlpha,
-                isFocused = inputFocused && state.focusLevel != FocusLevel.AREA_SELECT
-            )
+            // INPUT AREA - Hidden when scrolled up to give more space for content
+            AnimatedVisibility(
+                visible = isAtBottom || inputFocused,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    InputArea(
+                        detectedPrompt = state.detectedPrompt,
+                        pendingInput = state.focus.pendingInput,
+                        selectedOptionIndex = state.focus.inputOptionIndex,
+                        fontSize = fontSize,
+                        fontFamily = monoFontFamily,
+                        alpha = inputAlpha,
+                        isFocused = inputFocused && state.focusLevel != FocusLevel.AREA_SELECT
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(4.dp))
 
             // COMMAND BAR or HINTS depending on focus
-            val isAtBottom = state.scrollPosition >= maxOf(0, state.lines.size - state.visibleLines)
             val showScrollHints = contentFocused && state.focusLevel == FocusLevel.AREA_FOCUSED && !isAtBottom
             val showInputHints = inputFocused && state.focusLevel == FocusLevel.AREA_FOCUSED
 
@@ -623,13 +632,12 @@ private fun InputArea(
     detectedPrompt: DetectedPrompt,
     pendingInput: String,
     selectedOptionIndex: Int,
-    displaySize: HudDisplaySize,
+    fontSize: androidx.compose.ui.unit.TextUnit,
     fontFamily: FontFamily,
     alpha: Float,
     isFocused: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val inputFontSize = (displaySize.fontSizeSp - 1).coerceAtLeast(8).sp
 
     // Collapse when no prompt detected and no pending input
     if (detectedPrompt is DetectedPrompt.None && pendingInput.isEmpty()) {
@@ -645,7 +653,7 @@ private fun InputArea(
             Text(
                 text = "No prompt",
                 color = HudColors.dimText,
-                fontSize = inputFontSize,
+                fontSize = fontSize,
                 fontFamily = fontFamily
             )
         }
@@ -674,7 +682,7 @@ private fun InputArea(
                         Text(
                             text = if (isSelected) "▶ $option" else "  $option",
                             color = if (isSelected) HudColors.green else HudColors.primaryText,
-                            fontSize = inputFontSize,
+                            fontSize = fontSize,
                             fontFamily = fontFamily,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                         )
@@ -691,14 +699,14 @@ private fun InputArea(
                     Text(
                         text = if (yesSelected) "▶ ✓ Yes" else "  ✓ Yes",
                         color = if (yesSelected) HudColors.green else HudColors.primaryText,
-                        fontSize = inputFontSize,
+                        fontSize = fontSize,
                         fontFamily = fontFamily,
                         fontWeight = if (yesSelected) FontWeight.Bold else FontWeight.Normal
                     )
                     Text(
                         text = if (!yesSelected) "▶ ✕ No" else "  ✕ No",
                         color = if (!yesSelected) HudColors.green else HudColors.primaryText,
-                        fontSize = inputFontSize,
+                        fontSize = fontSize,
                         fontFamily = fontFamily,
                         fontWeight = if (!yesSelected) FontWeight.Bold else FontWeight.Normal
                     )
@@ -710,13 +718,13 @@ private fun InputArea(
                     Text(
                         text = "❯ ",
                         color = HudColors.cyan,
-                        fontSize = inputFontSize,
+                        fontSize = fontSize,
                         fontFamily = fontFamily
                     )
                     Text(
                         text = pendingInput.ifEmpty { detectedPrompt.placeholder },
                         color = if (pendingInput.isNotEmpty()) HudColors.green else HudColors.dimText,
-                        fontSize = inputFontSize,
+                        fontSize = fontSize,
                         fontFamily = fontFamily
                     )
                 }
@@ -728,13 +736,13 @@ private fun InputArea(
                     Text(
                         text = "❯ ",
                         color = HudColors.cyan,
-                        fontSize = inputFontSize,
+                        fontSize = fontSize,
                         fontFamily = fontFamily
                     )
                     Text(
                         text = pendingInput.ifEmpty { "..." },
                         color = if (pendingInput.isNotEmpty()) HudColors.green else HudColors.dimText,
-                        fontSize = inputFontSize,
+                        fontSize = fontSize,
                         fontFamily = fontFamily
                     )
                 }
