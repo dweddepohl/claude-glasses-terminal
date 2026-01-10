@@ -72,7 +72,12 @@ class HudActivity : ComponentActivity() {
         setContent {
             GlassesHudTheme {
                 val state by terminalState.collectAsState()
-                HudScreen(state = state)
+                HudScreen(
+                    state = state,
+                    onTap = { handleGesture(Gesture.TAP) },
+                    onDoubleTap = { handleGesture(Gesture.DOUBLE_TAP) },
+                    onLongPress = { handleGesture(Gesture.LONG_PRESS) }
+                )
             }
         }
 
@@ -98,6 +103,17 @@ class HudActivity : ComponentActivity() {
         return super.onTouchEvent(event)
     }
 
+    // Handle generic motion events from external touchpad (Rokid glasses temple touchpad)
+    override fun onGenericMotionEvent(event: MotionEvent?): Boolean {
+        event?.let {
+            Log.d(GlassesApp.TAG, "GenericMotionEvent: action=${it.action}, source=${it.source}")
+            if (gestureHandler.onTouchEvent(it)) {
+                return true
+            }
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         // Handle hardware buttons on glasses
         when (keyCode) {
@@ -118,18 +134,58 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun handleGesture(gesture: Gesture) {
+        Log.d(GlassesApp.TAG, "Gesture detected: $gesture, mode: ${terminalState.value.mode}")
+        val currentMode = terminalState.value.mode
         when (gesture) {
-            Gesture.SWIPE_UP -> scrollUp()
-            Gesture.SWIPE_DOWN -> scrollDown()
-            Gesture.TAP -> sendCommand("enter")
+            Gesture.SWIPE_UP, Gesture.SCROLL_UP -> {
+                when (currentMode) {
+                    TerminalState.Mode.SCROLL -> scrollUp()
+                    TerminalState.Mode.NAVIGATE -> sendCommand("up")
+                    TerminalState.Mode.COMMAND -> sendCommand("tab")
+                }
+            }
+            Gesture.SWIPE_DOWN, Gesture.SCROLL_DOWN -> {
+                when (currentMode) {
+                    TerminalState.Mode.SCROLL -> scrollDown()
+                    TerminalState.Mode.NAVIGATE -> sendCommand("down")
+                    TerminalState.Mode.COMMAND -> sendCommand("escape")
+                }
+            }
+            Gesture.TAP -> {
+                when (currentMode) {
+                    TerminalState.Mode.SCROLL -> scrollToBottom()
+                    TerminalState.Mode.NAVIGATE -> sendCommand("enter")
+                    TerminalState.Mode.COMMAND -> sendCommand("shift_tab")  // Switch Claude Code modes
+                }
+            }
             Gesture.DOUBLE_TAP -> toggleMode()
             Gesture.LONG_PRESS -> sendCommand("escape")
-            Gesture.SWIPE_LEFT -> sendCommand("shift_tab")
-            Gesture.SWIPE_RIGHT -> sendCommand("tab")
-            Gesture.SCROLL_UP -> scrollUp()
-            Gesture.SCROLL_DOWN -> scrollDown()
+            Gesture.SWIPE_LEFT -> {
+                when (currentMode) {
+                    TerminalState.Mode.COMMAND -> sendCommand("escape")
+                    else -> sendCommand("shift_tab")
+                }
+            }
+            Gesture.SWIPE_RIGHT -> {
+                when (currentMode) {
+                    TerminalState.Mode.COMMAND -> sendCommand("tab")
+                    else -> sendCommand("tab")
+                }
+            }
             Gesture.ESCAPE -> sendCommand("escape")
         }
+    }
+
+    private fun scrollToBottom() {
+        val current = terminalState.value
+        // Scroll to last item index so it appears at top, which effectively shows the bottom
+        val lastIndex = maxOf(0, current.lines.size - 1)
+        Log.d(GlassesApp.TAG, "scrollToBottom: currentPos=${current.scrollPosition}, lines=${current.lines.size}, scrollingTo=$lastIndex")
+        // Increment trigger to force scroll even if position unchanged
+        terminalState.value = current.copy(
+            scrollPosition = lastIndex,
+            scrollTrigger = current.scrollTrigger + 1
+        )
     }
 
     private fun scrollUp() {

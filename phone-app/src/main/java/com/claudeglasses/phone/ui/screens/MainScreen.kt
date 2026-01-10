@@ -93,6 +93,25 @@ fun MainScreen() {
         }
     }
 
+    // Handle commands from glasses and forward to server
+    LaunchedEffect(Unit) {
+        glassesManager.onMessageFromGlasses = { message ->
+            try {
+                val json = org.json.JSONObject(message)
+                val type = json.optString("type", "")
+                if (type == "command") {
+                    val command = json.optString("command", "")
+                    android.util.Log.d("MainScreen", "Received command from glasses: $command")
+                    if (command.isNotEmpty()) {
+                        terminalClient.sendKey(command)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MainScreen", "Error parsing glasses message", e)
+            }
+        }
+    }
+
     // Forward terminal updates to glasses (in debug mode)
     LaunchedEffect(terminalLines) {
         if (terminalLines.isNotEmpty()) {

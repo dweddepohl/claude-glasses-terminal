@@ -1,12 +1,23 @@
 package com.claudeglasses.glasses.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineScope
+import android.util.Log
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -38,6 +49,7 @@ enum class HudDisplaySize(val fontSizeSp: Int, val cols: Int, val rows: Int, val
 data class TerminalState(
     val lines: List<String> = emptyList(),
     val scrollPosition: Int = 0,
+    val scrollTrigger: Int = 0,  // Increment to force scroll even if position unchanged
     val cursorLine: Int = 0,
     val mode: Mode = Mode.SCROLL,
     val displaySize: HudDisplaySize = HudDisplaySize.NORMAL,
@@ -63,17 +75,50 @@ data class TerminalState(
  * - Minimal UI chrome
  */
 @Composable
-fun HudScreen(state: TerminalState) {
+fun HudScreen(
+    state: TerminalState,
+    onTap: () -> Unit = {},
+    onDoubleTap: () -> Unit = {},
+    onLongPress: () -> Unit = {}
+) {
     val listState = rememberLazyListState()
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
 
     // Use JetBrains Mono for proper monospace box-drawing characters
     val monoFontFamily = remember { FontFamily(Font(R.font.jetbrains_mono)) }
 
-    // Auto-scroll when position changes
-    LaunchedEffect(state.scrollPosition) {
-        if (state.lines.isNotEmpty()) {
+    // Gesture hints visibility - show on launch and when scrolling, then fade
+    var hintsVisible by remember { mutableStateOf(true) }
+    val isScrolling = listState.isScrollInProgress
+
+    // Double-tap detection state
+    var lastTapTime by remember { mutableStateOf(0L) }
+    var pendingTapJob by remember { mutableStateOf<Job?>(null) }
+    val doubleTapTimeout = 300L
+
+    // Show hints when scrolling starts, hide after delay when scrolling stops
+    LaunchedEffect(isScrolling, state.scrollPosition) {
+        if (isScrolling) {
+            hintsVisible = true
+        } else {
+            delay(2000) // Hide after 2 seconds of no scrolling
+            hintsVisible = false
+        }
+    }
+
+    // Show hints when mode changes
+    LaunchedEffect(state.mode) {
+        hintsVisible = true
+        delay(2000) // Hide after 2 seconds
+        hintsVisible = false
+    }
+
+    // Auto-scroll when position or trigger changes
+    LaunchedEffect(state.scrollPosition, state.scrollTrigger) {
+        if (state.lines.isNotEmpty() && state.scrollPosition < state.lines.size) {
+            Log.d("HudScreen", "Auto-scrolling to position ${state.scrollPosition}")
             listState.animateScrollToItem(state.scrollPosition)
         }
     }
@@ -83,6 +128,38 @@ fun HudScreen(state: TerminalState) {
             .fillMaxSize()
             .background(Color.Black)  // Pure black for HUD
             .padding(horizontal = 16.dp, vertical = 12.dp)  // Reduced padding for more space
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = {
+                        Log.d("HudScreen", "Compose onTap detected at $it")
+                        val now = System.currentTimeMillis()
+                        if (now - lastTapTime < doubleTapTimeout) {
+                            // Double tap detected
+                            Log.d("HudScreen", "Double tap detected")
+                            pendingTapJob?.cancel()
+                            pendingTapJob = null
+                            lastTapTime = 0L
+                            onDoubleTap()
+                        } else {
+                            // Potential single tap - wait to see if double tap follows
+                            lastTapTime = now
+                            pendingTapJob?.cancel()
+                            pendingTapJob = scope.launch {
+                                delay(doubleTapTimeout)
+                                if (lastTapTime == now) {
+                                    Log.d("HudScreen", "Single tap confirmed")
+                                    onTap()
+                                }
+                            }
+                        }
+                    },
+                    onLongPress = {
+                        Log.d("HudScreen", "Long press detected at $it")
+                        pendingTapJob?.cancel()
+                        onLongPress()
+                    }
+                )
+            }
     ) {
         // Calculate font size to fit 65 columns in available width
         val targetColumns = 65
@@ -102,58 +179,73 @@ fun HudScreen(state: TerminalState) {
             scaledSize.coerceIn(6f, 24f).sp
         }
 
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Status bar at top
-            StatusBar(
-                mode = state.mode,
-                lineInfo = "${state.scrollPosition + 1}/${state.lines.size}",
-                isConnected = state.isConnected,
-                displaySize = state.displaySize,
-                fontFamily = monoFontFamily
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Terminal content
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) {
-                if (state.lines.isEmpty()) {
-                    // Empty state
-                    Text(
-                        text = "Waiting for connection...",
-                        color = HudColors.dimText,
-                        fontSize = fontSize,
-                        fontFamily = monoFontFamily,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        itemsIndexed(state.lines) { index, line ->
-                            TerminalLine(
-                                text = line,
-                                isCurrentLine = index == state.cursorLine,
-                                lineNumber = index + 1,
-                                fontSize = fontSize,
-                                fontFamily = monoFontFamily
-                            )
-                        }
+        // Use Box for overlay layout - content fills everything, UI overlaid on top
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Terminal content - fills entire space
+            if (state.lines.isEmpty()) {
+                // Empty state
+                Text(
+                    text = "Waiting for connection...",
+                    color = HudColors.dimText,
+                    fontSize = fontSize,
+                    fontFamily = monoFontFamily,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = 28.dp, bottom = 24.dp)
+                ) {
+                    itemsIndexed(state.lines) { index, line ->
+                        TerminalLine(
+                            text = line,
+                            isCurrentLine = index == state.cursorLine,
+                            lineNumber = index + 1,
+                            fontSize = fontSize,
+                            fontFamily = monoFontFamily
+                        )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            // Status bar overlay at top
+            AnimatedVisibility(
+                visible = hintsVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.TopCenter)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black)
+                ) {
+                    StatusBar(
+                        mode = state.mode,
+                        lineInfo = "${state.scrollPosition + 1}/${state.lines.size}",
+                        isConnected = state.isConnected,
+                        displaySize = state.displaySize,
+                        fontFamily = monoFontFamily
+                    )
+                }
+            }
 
-            // Gesture hints at bottom
-            GestureHints(mode = state.mode, displaySize = state.displaySize, fontFamily = monoFontFamily)
+            // Gesture hints overlay at bottom
+            AnimatedVisibility(
+                visible = hintsVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black)
+                ) {
+                    GestureHints(mode = state.mode, displaySize = state.displaySize, fontFamily = monoFontFamily)
+                }
+            }
         }
     }
 }
@@ -228,9 +320,9 @@ private fun TerminalLine(
 @Composable
 private fun GestureHints(mode: TerminalState.Mode, displaySize: HudDisplaySize, fontFamily: FontFamily) {
     val hints = when (mode) {
-        TerminalState.Mode.SCROLL -> "↑↓ Scroll  ●● Mode  ⟳ ESC"
-        TerminalState.Mode.NAVIGATE -> "↑↓ Arrow  ●● Mode  ⟳ ESC"
-        TerminalState.Mode.COMMAND -> "← ⇧Tab  → Tab  ●● Mode"
+        TerminalState.Mode.SCROLL -> "● End  ↑↓ Scroll  ●● Mode"
+        TerminalState.Mode.NAVIGATE -> "● Enter  ↑↓ Arrow  ●● Mode"
+        TerminalState.Mode.COMMAND -> "● ⇧Tab  ↑ Tab  ↓ ESC  ●● Mode"
     }
     val hintFontSize = (displaySize.fontSizeSp - 3).coerceAtLeast(8).sp
 
