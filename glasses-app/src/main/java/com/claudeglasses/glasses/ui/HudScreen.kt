@@ -297,8 +297,8 @@ fun HudScreen(
                 )
             }
     ) {
-        // Calculate font size to fit 65 columns in available width
-        val targetColumns = 65
+        // Calculate font size to fit 67 columns in available width
+        val targetColumns = 67
         val referenceText = "M".repeat(targetColumns)
         val referenceFontSize = 12.sp
 
