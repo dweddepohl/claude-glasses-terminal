@@ -507,8 +507,9 @@ class HudActivity : ComponentActivity() {
                 sendCommand("down")
             }
             Gesture.TAP -> {
-                // Send enter to Claude Code
+                // Send enter to Claude Code and return to level 0
                 sendCommand("enter")
+                exitToAreaSelect()
             }
             Gesture.DOUBLE_TAP -> exitToAreaSelect()
             Gesture.LONG_PRESS -> {
@@ -863,17 +864,8 @@ class HudActivity : ComponentActivity() {
                     }
 
                     val current = terminalState.value
-                    // Auto-scroll on first content or if in Content area and not in page scroll mode
-                    val isFirstContent = current.lines.isEmpty()
-                    val shouldAutoScroll = isFirstContent || (
-                        current.focusedArea == FocusArea.CONTENT &&
-                        current.contentMode != ContentMode.PAGE
-                    )
-                    val newScrollPosition = if (shouldAutoScroll) {
-                        maxOf(0, lines.size - 1)
-                    } else {
-                        current.scrollPosition
-                    }
+                    // Always auto-scroll to bottom on new content
+                    val newScrollPosition = maxOf(0, lines.size - 1)
                     // Parse prompt from terminal lines
                     val detectedPrompt = parsePrompt(lines)
 
@@ -881,7 +873,7 @@ class HudActivity : ComponentActivity() {
                         lines = lines,
                         cursorLine = cursorPos,
                         scrollPosition = newScrollPosition,
-                        scrollTrigger = if (shouldAutoScroll) current.scrollTrigger + 1 else current.scrollTrigger,
+                        scrollTrigger = current.scrollTrigger + 1,
                         isConnected = true,
                         detectedPrompt = detectedPrompt
                     )
