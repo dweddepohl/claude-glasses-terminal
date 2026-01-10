@@ -422,10 +422,19 @@ class ClaudeTerminalServer {
       'backspace': 'BSpace',
       'ctrl_c': 'C-c',
       'ctrl_d': 'C-d',
-      'ctrl_u': 'C-u',
       'page_up': 'PageUp',
       'page_down': 'PageDown'
     };
+
+    // Special handling for ctrl_u: send End first to ensure entire line is cleared
+    if (key === 'ctrl_u') {
+      try {
+        execSync(`tmux send-keys -t ${this.sessionName} End C-u`);
+      } catch (e) {
+        console.error('Error sending clear to tmux:', e.message);
+      }
+      return;
+    }
 
     const tmuxKey = keyMap[key];
     if (tmuxKey) {

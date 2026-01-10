@@ -190,8 +190,9 @@ class GlassesVoiceHandler(private val context: Context) {
     }
 
     /**
-     * Simulate voice input for debug/emulator testing.
-     * Call this with text that would have been spoken.
+     * Simulate voice input for debug/emulator testing (keyboard input).
+     * Unlike real voice input, this does NOT apply word mappings (e.g., "at" -> "@")
+     * since keyboard input should be sent exactly as typed.
      */
     fun simulateVoiceInput(text: String, onResult: (VoiceResult) -> Unit) {
         if (!BuildConfig.DEBUG) {
@@ -202,10 +203,10 @@ class GlassesVoiceHandler(private val context: Context) {
         Log.d(TAG, "Simulating voice input: $text")
         _voiceState.value = VoiceState.Recognizing(text)
 
-        // Process after a short delay to simulate recognition
-        val processedResult = processSpokenText(text)
+        // For keyboard input, send text as-is without word mappings
+        // Word mappings are only useful for actual voice recognition
         _voiceState.value = VoiceState.Idle
-        onResult(processedResult)
+        onResult(VoiceResult.Text(text))
     }
 
     /**
