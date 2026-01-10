@@ -25,6 +25,7 @@ import com.claudeglasses.glasses.ui.FocusArea
 import com.claudeglasses.glasses.ui.FocusLevel
 import com.claudeglasses.glasses.ui.FocusState
 import com.claudeglasses.glasses.ui.HudScreen
+import com.claudeglasses.glasses.ui.LineColorType
 import com.claudeglasses.glasses.ui.QuickCommand
 import com.claudeglasses.glasses.ui.TerminalState
 import com.claudeglasses.glasses.ui.VoiceInputState
@@ -851,15 +852,31 @@ class HudActivity : ComponentActivity() {
             val type = msg.optString("type", "")
 
             when (type) {
-                "terminal_update" -> {
-                    // Parse terminal update from phone app
+                "terminal_update", "output" -> {
+                    // Parse terminal update from server (via phone app)
                     val linesArray = msg.optJSONArray("lines")
+                    val lineColorsArray = msg.optJSONArray("lineColors")
                     val cursorPos = msg.optInt("cursorPosition", 0)
 
                     val lines = mutableListOf<String>()
                     if (linesArray != null) {
                         for (i in 0 until linesArray.length()) {
                             lines.add(linesArray.optString(i, ""))
+                        }
+                    }
+
+                    // Parse line colors from server ANSI detection
+                    val lineColors = mutableListOf<LineColorType>()
+                    if (lineColorsArray != null) {
+                        for (i in 0 until lineColorsArray.length()) {
+                            val colorStr = lineColorsArray.optString(i, "")
+                            val colorType = when (colorStr) {
+                                "addition" -> LineColorType.ADDITION
+                                "deletion" -> LineColorType.DELETION
+                                "header" -> LineColorType.HEADER
+                                else -> LineColorType.NORMAL
+                            }
+                            lineColors.add(colorType)
                         }
                     }
 
@@ -871,6 +888,7 @@ class HudActivity : ComponentActivity() {
 
                     terminalState.value = current.copy(
                         lines = lines,
+                        lineColors = lineColors,
                         cursorLine = cursorPos,
                         scrollPosition = newScrollPosition,
                         scrollTrigger = current.scrollTrigger + 1,
@@ -878,7 +896,7 @@ class HudActivity : ComponentActivity() {
                         detectedPrompt = detectedPrompt
                     )
 
-                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines, prompt: $detectedPrompt")
+                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines, ${lineColors.count { it != LineColorType.NORMAL }} colored")
                 }
                 "sessions" -> {
                     // Session list from server
