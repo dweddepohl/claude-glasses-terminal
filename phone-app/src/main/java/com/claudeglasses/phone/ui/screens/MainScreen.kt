@@ -144,29 +144,10 @@ fun MainScreen() {
             android.util.Log.d("MainScreen", "Forwarding session message to glasses")
             glassesManager.sendRawMessage(message)
         }
-    }
 
-    // Forward terminal updates to glasses (in debug mode)
-    LaunchedEffect(terminalLines) {
-        if (terminalLines.isNotEmpty()) {
-            val lines = terminalLines.map { it.content }
-            glassesManager.sendToGlasses(
-                lines = lines,
-                cursorPosition = terminalLines.size - 1,
-                mode = "SCROLL"
-            )
-        }
-    }
-
-    // Send current terminal state when glasses connect
-    LaunchedEffect(glassesState) {
-        if (glassesState is GlassesConnectionManager.ConnectionState.Connected && terminalLines.isNotEmpty()) {
-            val lines = terminalLines.map { it.content }
-            glassesManager.sendToGlasses(
-                lines = lines,
-                cursorPosition = terminalLines.size - 1,
-                mode = "SCROLL"
-            )
+        // Forward terminal output (with lineColors) from server to glasses
+        terminalClient.onTerminalOutput = { message ->
+            glassesManager.sendRawMessage(message)
         }
     }
 

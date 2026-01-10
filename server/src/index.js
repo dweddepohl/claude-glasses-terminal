@@ -11,6 +11,70 @@
 import { WebSocketServer } from 'ws';
 import stripAnsi from 'strip-ansi';
 import { writeFileSync, unlinkSync, mkdtempSync } from 'fs';
+
+/**
+ * Parse ANSI color codes and return line color type
+ * Returns: 'addition' (green), 'deletion' (red), 'header' (cyan), or null
+ *
+ * Supports:
+ * - Basic colors: \x1b[31m (red), \x1b[32m (green), \x1b[36m (cyan)
+ * - True color: \x1b[38;2;R;G;Bm (foreground RGB)
+ */
+function getLineColorType(line) {
+  // Check for true color BACKGROUND: \x1b[48;2;R;G;Bm (used for diff highlighting)
+  const bgColorMatch = line.match(/\x1b\[48;2;(\d+);(\d+);(\d+)m/);
+  if (bgColorMatch) {
+    const r = parseInt(bgColorMatch[1], 10);
+    const g = parseInt(bgColorMatch[2], 10);
+    const b = parseInt(bgColorMatch[3], 10);
+
+    // Green background (additions)
+    if (g > r + 30 && g > b) {
+      return 'addition';
+    }
+    // Red background (deletions)
+    if (r > g + 30 && r > b) {
+      return 'deletion';
+    }
+  }
+
+  // Check for true color FOREGROUND: \x1b[38;2;R;G;Bm
+  const fgColorMatch = line.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+  if (fgColorMatch) {
+    const r = parseInt(fgColorMatch[1], 10);
+    const g = parseInt(fgColorMatch[2], 10);
+    const b = parseInt(fgColorMatch[3], 10);
+
+    // Green-ish (additions): high green, low red
+    if (g > 150 && r < 100 && b < 150) {
+      return 'addition';
+    }
+    // Red-ish (deletions): high red, low green
+    if (r > 150 && g < 100) {
+      return 'deletion';
+    }
+    // Cyan-ish (headers): high green and blue, low red
+    if (g > 150 && b > 150 && r < 100) {
+      return 'header';
+    }
+  }
+
+  // Check for basic ANSI color codes: \x1b[XXm
+  const basicMatch = line.match(/\x1b\[(\d+)m/);
+  if (basicMatch) {
+    const code = parseInt(basicMatch[1], 10);
+    switch (code) {
+      case 31: case 91: return 'deletion';   // Red / Bright red
+      case 32: case 92: return 'addition';   // Green / Bright green
+      case 36: case 96: return 'header';     // Cyan / Bright cyan
+      case 41: case 101: return 'deletion';  // Red background
+      case 42: case 102: return 'addition';  // Green background
+      default: break;
+    }
+  }
+
+  return null;
+}
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, execSync } from 'child_process';
@@ -181,9 +245,9 @@ class ClaudeTerminalServer {
 
   captureOutput() {
     try {
-      // Capture the entire visible pane content
+      // Capture the entire visible pane content with ANSI escape sequences (-e)
       const output = execSync(
-        `tmux capture-pane -t ${this.sessionName} -p -S -${this.maxBufferLines}`,
+        `tmux capture-pane -t ${this.sessionName} -p -e -S -${this.maxBufferLines}`,
         { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
       );
 
@@ -191,7 +255,20 @@ class ClaudeTerminalServer {
       if (output !== this.lastOutput) {
         this.lastOutput = output;
 
-        // Strip ANSI codes and split into lines
+        // Split into raw lines (with ANSI) for color detection
+        const rawLines = output.split('\n');
+
+        // Debug: log first few lines with escape sequences
+        const linesWithAnsi = rawLines.filter(l => l.includes('\x1b') || l.includes('\u001b'));
+        if (linesWithAnsi.length > 0) {
+          console.log(`Found ${linesWithAnsi.length} lines with ANSI codes`);
+          console.log('Sample:', JSON.stringify(linesWithAnsi[0].substring(0, 100)));
+        }
+
+        // Extract color type for each line BEFORE stripping ANSI
+        const lineColors = rawLines.map(line => getLineColorType(line));
+
+        // Strip ANSI codes for display text
         const cleanedOutput = stripAnsi(output);
         const lines = cleanedOutput.split('\n');
 
@@ -200,19 +277,23 @@ class ClaudeTerminalServer {
 
         // Debug: log when broadcasting
         const nonEmptyCount = lines.filter(l => l.trim().length > 0).length;
-        console.log(`Broadcasting ${lines.length} lines (${nonEmptyCount} non-empty) to ${this.clients.size} clients`);
+        const coloredCount = lineColors.filter(c => c !== null).length;
+        console.log(`Broadcasting ${lines.length} lines (${nonEmptyCount} non-empty, ${coloredCount} colored) to ${this.clients.size} clients`);
 
         // Remove trailing empty lines but keep structure
         let trimmedLines = [...lines];
+        let trimmedColors = [...lineColors];
         while (trimmedLines.length > 0 && trimmedLines[trimmedLines.length - 1].trim() === '') {
           trimmedLines.pop();
+          trimmedColors.pop();
         }
 
-        // Send all content (app will handle scrolling)
+        // Send all content with color info (app will handle scrolling)
         this.broadcast({
           type: 'output',
           data: cleanedOutput,
           lines: trimmedLines,
+          lineColors: trimmedColors,  // 'addition', 'deletion', 'header', or null
           totalLines: trimmedLines.length
         });
       }

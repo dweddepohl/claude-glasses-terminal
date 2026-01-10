@@ -132,8 +132,19 @@ sealed class VoiceInputState {
 /**
  * Terminal state data class with hierarchical focus model
  */
+/**
+ * Line color types from server ANSI parsing
+ */
+enum class LineColorType {
+    ADDITION,   // Green - added lines in diff
+    DELETION,   // Red - removed lines in diff
+    HEADER,     // Cyan - diff headers
+    NORMAL      // Default text
+}
+
 data class TerminalState(
     val lines: List<String> = emptyList(),
+    val lineColors: List<LineColorType> = emptyList(),  // Color info from server
     val scrollPosition: Int = 0,
     val scrollTrigger: Int = 0,
     val cursorLine: Int = 0,
@@ -319,6 +330,7 @@ fun HudScreen(
             // CONTENT AREA - Terminal output (weight: fills remaining space)
             ContentArea(
                 lines = state.lines,
+                lineColors = state.lineColors,
                 listState = listState,
                 cursorLine = state.cursorLine,
                 contentMode = state.contentMode,
@@ -417,6 +429,7 @@ fun HudScreen(
 @Composable
 private fun ContentArea(
     lines: List<String>,
+    lineColors: List<LineColorType>,
     listState: androidx.compose.foundation.lazy.LazyListState,
     cursorLine: Int,
     contentMode: ContentMode,
@@ -454,10 +467,12 @@ private fun ContentArea(
                         else -> false
                     }
                     val isCurrentLine = index == cursorLine
+                    val lineColor = lineColors.getOrNull(index) ?: LineColorType.NORMAL
 
                     ContentLine(
                         text = line,
                         lineIndex = index,
+                        lineColor = lineColor,
                         isCurrentLine = isCurrentLine,
                         isHighlighted = isHighlighted,
                         contentMode = contentMode,
@@ -476,6 +491,7 @@ private fun ContentArea(
 private fun ContentLine(
     text: String,
     lineIndex: Int,
+    lineColor: LineColorType,
     isCurrentLine: Boolean,
     isHighlighted: Boolean,
     contentMode: ContentMode,
@@ -484,14 +500,20 @@ private fun ContentLine(
     fontSize: androidx.compose.ui.unit.TextUnit,
     fontFamily: FontFamily
 ) {
+    // Use server-provided line color for monochrome styling
     val backgroundColor = when {
         isHighlighted -> HudColors.green.copy(alpha = 0.3f)
+        lineColor == LineColorType.ADDITION -> HudColors.green.copy(alpha = 0.15f)
+        lineColor == LineColorType.DELETION -> Color.Transparent
         else -> Color.Transparent
     }
 
     val textColor = when {
         isHighlighted -> HudColors.green
         isCurrentLine -> HudColors.cyan
+        lineColor == LineColorType.ADDITION -> HudColors.green  // Bright green for additions
+        lineColor == LineColorType.DELETION -> HudColors.dimText  // Dim for deletions
+        lineColor == LineColorType.HEADER -> HudColors.cyan  // Cyan for diff headers
         else -> HudColors.primaryText
     }
 

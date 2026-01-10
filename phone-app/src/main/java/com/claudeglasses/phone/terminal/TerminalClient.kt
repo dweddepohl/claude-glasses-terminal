@@ -37,6 +37,9 @@ class TerminalClient {
     // Callback for session-related messages to forward to glasses
     var onSessionMessage: ((String) -> Unit)? = null
 
+    // Callback for terminal output messages (with color info) to forward to glasses
+    var onTerminalOutput: ((String) -> Unit)? = null
+
     private val _scrollPosition = MutableStateFlow(0)
     val scrollPosition: StateFlow<Int> = _scrollPosition.asStateFlow()
 
@@ -116,6 +119,9 @@ class TerminalClient {
                             Log.d(TAG, "Updated terminal with ${newLines.size} lines")
                         }
                     }
+
+                    // Forward raw message to glasses (includes lineColors)
+                    onTerminalOutput?.invoke(json)
 
                     // Also handle raw data field if present
                     val data = msg.optString("data", "")
