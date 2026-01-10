@@ -148,8 +148,17 @@ class HudActivity : ComponentActivity() {
             phoneConnection.connectionState.collect { state ->
                 val isConnected = state is PhoneConnectionService.ConnectionState.Connected
                 val current = terminalState.value
+                val wasConnected = current.isConnected
+
                 if (current.isConnected != isConnected) {
                     terminalState.value = current.copy(isConnected = isConnected)
+                }
+
+                // When connection is established, request session list to show picker
+                // (unless a session was already selected in this app session)
+                if (isConnected && !wasConnected && current.currentSession.isEmpty()) {
+                    Log.i(GlassesApp.TAG, "Connected to phone, requesting session list")
+                    requestSessionList()
                 }
             }
         }
