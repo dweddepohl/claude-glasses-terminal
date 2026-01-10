@@ -1,24 +1,38 @@
 package com.claudeglasses.glasses
 
+import android.Manifest
+import android.app.AlertDialog
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
+import android.widget.EditText
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.*
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.runtime.*
 import androidx.lifecycle.lifecycleScope
 import com.claudeglasses.glasses.input.GestureHandler
 import com.claudeglasses.glasses.input.GestureHandler.Gesture
 import com.claudeglasses.glasses.service.PhoneConnectionService
+import com.claudeglasses.glasses.ui.ContentMode
+import com.claudeglasses.glasses.ui.DetectedPrompt
+import com.claudeglasses.glasses.ui.FocusArea
+import com.claudeglasses.glasses.ui.FocusLevel
+import com.claudeglasses.glasses.ui.FocusState
 import com.claudeglasses.glasses.ui.HudScreen
+import com.claudeglasses.glasses.ui.QuickCommand
 import com.claudeglasses.glasses.ui.TerminalState
+import com.claudeglasses.glasses.ui.VoiceInputState
 import com.claudeglasses.glasses.ui.theme.GlassesHudTheme
+import com.claudeglasses.glasses.voice.GlassesVoiceHandler
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -40,6 +54,18 @@ class HudActivity : ComponentActivity() {
     private val terminalState = MutableStateFlow(TerminalState())
     private lateinit var gestureHandler: GestureHandler
     private lateinit var phoneConnection: PhoneConnectionService
+    private lateinit var voiceHandler: GlassesVoiceHandler
+
+    // Permission launcher for audio recording
+    private val audioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startVoiceRecognition()
+        } else {
+            showVoiceError("Mic permission needed")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +94,34 @@ class HudActivity : ComponentActivity() {
         )
 
         Log.i(GlassesApp.TAG, "HudActivity created, debugMode=$DEBUG_MODE")
+
+        // Initialize voice handler
+        voiceHandler = GlassesVoiceHandler(this)
+        val voiceAvailable = voiceHandler.initialize()
+        if (!voiceAvailable) {
+            Log.w(GlassesApp.TAG, "Speech recognition not available - voice commands disabled")
+        }
+
+        // Observe voice state and update terminal state
+        lifecycleScope.launch {
+            voiceHandler.voiceState.collect { voiceState ->
+                val current = terminalState.value
+                val newVoiceState = when (voiceState) {
+                    is GlassesVoiceHandler.VoiceState.Idle -> VoiceInputState.Idle
+                    is GlassesVoiceHandler.VoiceState.Listening -> VoiceInputState.Listening
+                    is GlassesVoiceHandler.VoiceState.Recognizing -> VoiceInputState.Recognizing
+                    is GlassesVoiceHandler.VoiceState.Error -> VoiceInputState.Error(voiceState.message)
+                }
+                val newVoiceText = when (voiceState) {
+                    is GlassesVoiceHandler.VoiceState.Recognizing -> voiceState.partialText
+                    else -> ""
+                }
+                terminalState.value = current.copy(
+                    voiceState = newVoiceState,
+                    voiceText = newVoiceText
+                )
+            }
+        }
 
         setContent {
             GlassesHudTheme {
@@ -115,73 +169,419 @@ class HudActivity : ComponentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Handle hardware buttons on glasses
+        // Handle hardware buttons on glasses and keyboard for emulator testing
         when (keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP -> {
-                handleGesture(Gesture.SCROLL_UP)
+            // Forward swipe (towards eyes) - volume up or arrow up
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_DPAD_UP -> {
+                handleGesture(Gesture.SWIPE_FORWARD)
                 return true
             }
-            KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                handleGesture(Gesture.SCROLL_DOWN)
+            // Backward swipe (towards ear) - volume down or arrow down
+            KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                handleGesture(Gesture.SWIPE_BACKWARD)
                 return true
             }
-            KeyEvent.KEYCODE_BACK -> {
-                handleGesture(Gesture.ESCAPE)
+            // Back button sends escape command directly
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                sendCommand("escape")
                 return true
+            }
+            // Keyboard shortcuts for emulator testing
+            KeyEvent.KEYCODE_V -> {
+                // V key toggles voice recognition
+                handleGesture(Gesture.LONG_PRESS)
+                return true
+            }
+            KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_ENTER -> {
+                // Space/Enter = tap (confirm)
+                handleGesture(Gesture.TAP)
+                return true
+            }
+            KeyEvent.KEYCODE_M, KeyEvent.KEYCODE_DEL -> {
+                // M or Backspace = double-tap (back/exit)
+                handleGesture(Gesture.DOUBLE_TAP)
+                return true
+            }
+            KeyEvent.KEYCODE_T -> {
+                // T = type text input (simulates voice input for emulator testing)
+                if (DEBUG_MODE) {
+                    showDebugTextInput()
+                    return true
+                }
             }
         }
         return super.onKeyDown(keyCode, event)
     }
 
-    private fun handleGesture(gesture: Gesture) {
-        Log.d(GlassesApp.TAG, "Gesture detected: $gesture, mode: ${terminalState.value.mode}")
-        val currentMode = terminalState.value.mode
-        when (gesture) {
-            Gesture.SWIPE_UP, Gesture.SCROLL_UP -> {
-                when (currentMode) {
-                    TerminalState.Mode.SCROLL -> scrollUp()
-                    TerminalState.Mode.NAVIGATE -> sendCommand("up")
-                    TerminalState.Mode.COMMAND -> sendCommand("tab")
+    /**
+     * Show a dialog for typing text input to simulate voice recognition.
+     * Only available in DEBUG_MODE for emulator testing.
+     */
+    private fun showDebugTextInput() {
+        // Show voice listening state
+        terminalState.value = terminalState.value.copy(
+            voiceState = VoiceInputState.Listening,
+            voiceText = ""
+        )
+
+        // Temporarily show system bars to fix window focus issue
+        val insetsController = WindowInsetsControllerCompat(window, window.decorView)
+        insetsController.show(WindowInsetsCompat.Type.systemBars())
+
+        val editText = EditText(this).apply {
+            hint = "Type voice input..."
+            setSingleLine(false)
+            maxLines = 3
+        }
+
+        val restoreImmersiveMode = {
+            // Re-enable immersive mode after dialog closes
+            insetsController.hide(WindowInsetsCompat.Type.systemBars())
+            insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Simulate Voice Input")
+            .setView(editText)
+            .setPositiveButton("Send") { _, _ ->
+                val text = editText.text.toString().trim()
+                restoreImmersiveMode()
+                if (text.isNotEmpty()) {
+                    voiceHandler.simulateVoiceInput(text) { result ->
+                        handleVoiceResult(result)
+                    }
+                } else {
+                    // Reset to idle if empty
+                    terminalState.value = terminalState.value.copy(
+                        voiceState = VoiceInputState.Idle,
+                        voiceText = ""
+                    )
                 }
             }
-            Gesture.SWIPE_DOWN, Gesture.SCROLL_DOWN -> {
-                when (currentMode) {
-                    TerminalState.Mode.SCROLL -> scrollDown()
-                    TerminalState.Mode.NAVIGATE -> sendCommand("down")
-                    TerminalState.Mode.COMMAND -> sendCommand("escape")
+            .setNegativeButton("Cancel") { _, _ ->
+                restoreImmersiveMode()
+                // Reset to idle
+                terminalState.value = terminalState.value.copy(
+                    voiceState = VoiceInputState.Idle,
+                    voiceText = ""
+                )
+            }
+            .setOnCancelListener {
+                restoreImmersiveMode()
+                // Reset to idle if dismissed
+                terminalState.value = terminalState.value.copy(
+                    voiceState = VoiceInputState.Idle,
+                    voiceText = ""
+                )
+            }
+            .create()
+
+        // Update partial text as user types (simulating live transcription)
+        editText.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val text = s?.toString() ?: ""
+                voiceHandler.updateSimulatedText(text)
+            }
+        })
+
+        dialog.show()
+
+        // Ensure dialog window has focus and can receive keyboard input
+        dialog.window?.apply {
+            clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+            clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+            setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+            // Make sure the window can receive input
+            setFlags(
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            )
+            decorView.requestFocus()
+        }
+
+        // Request focus on the EditText with a slight delay to ensure window is ready
+        editText.postDelayed({
+            editText.requestFocus()
+            // Show keyboard
+            val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+            imm.showSoftInput(editText, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }, 100)
+    }
+
+    // ============== Hierarchical Focus-Based Gesture Handling ==============
+
+    private fun handleGesture(gesture: Gesture) {
+        val current = terminalState.value
+        val focus = current.focus
+        val isVoiceActive = voiceHandler.isListening()
+
+        Log.d(GlassesApp.TAG, "Gesture: $gesture, Level: ${focus.level}, Area: ${focus.focusedArea}")
+
+        // If voice is active, TAP cancels voice recognition
+        if (isVoiceActive && gesture == Gesture.TAP) {
+            Log.d(GlassesApp.TAG, "Cancelling voice recognition via tap")
+            voiceHandler.cancel()
+            return
+        }
+
+        // Route gesture based on current focus level
+        when (focus.level) {
+            FocusLevel.AREA_SELECT -> handleAreaSelectGesture(gesture)
+            FocusLevel.AREA_FOCUSED, FocusLevel.FINE_CONTROL -> when (focus.focusedArea) {
+                FocusArea.CONTENT -> handleContentGesture(gesture)
+                FocusArea.INPUT -> handleInputGesture(gesture)
+                FocusArea.COMMAND -> handleCommandGesture(gesture)
+            }
+        }
+    }
+
+    // Level 0: Area Selection
+    private fun handleAreaSelectGesture(gesture: Gesture) {
+        val current = terminalState.value
+        val focus = current.focus
+
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> {
+                // Move focus up: Command → Input → Content
+                when (focus.focusedArea) {
+                    FocusArea.COMMAND -> updateFocus(focus.copy(focusedArea = FocusArea.INPUT))
+                    FocusArea.INPUT -> updateFocus(focus.copy(focusedArea = FocusArea.CONTENT))
+                    FocusArea.CONTENT -> {
+                        // Already at top - enter level 1 and scroll up
+                        updateFocus(focus.copy(level = FocusLevel.AREA_FOCUSED))
+                        scrollUp()
+                    }
+                }
+            }
+            Gesture.SWIPE_BACKWARD -> {
+                // Move focus down: Content → Input → Command
+                when (focus.focusedArea) {
+                    FocusArea.CONTENT -> updateFocus(focus.copy(focusedArea = FocusArea.INPUT))
+                    FocusArea.INPUT -> {
+                        // Auto-enter level 1 for COMMAND bar (highlight ENTER right away)
+                        updateFocus(focus.copy(
+                            focusedArea = FocusArea.COMMAND,
+                            level = FocusLevel.AREA_FOCUSED,
+                            commandIndex = 0
+                        ))
+                    }
+                    FocusArea.COMMAND -> { } // Already at bottom
                 }
             }
             Gesture.TAP -> {
-                when (currentMode) {
-                    TerminalState.Mode.SCROLL -> scrollToBottom()
-                    TerminalState.Mode.NAVIGATE -> sendCommand("enter")
-                    TerminalState.Mode.COMMAND -> sendCommand("shift_tab")  // Switch Claude Code modes
+                // Enter the focused area (go to Level 1)
+                // For COMMAND, also reset to first command
+                if (focus.focusedArea == FocusArea.COMMAND) {
+                    updateFocus(focus.copy(level = FocusLevel.AREA_FOCUSED, commandIndex = 0))
+                } else {
+                    updateFocus(focus.copy(level = FocusLevel.AREA_FOCUSED))
                 }
             }
-            Gesture.DOUBLE_TAP -> toggleMode()
-            Gesture.LONG_PRESS -> sendCommand("escape")
-            Gesture.SWIPE_LEFT -> {
-                when (currentMode) {
-                    TerminalState.Mode.COMMAND -> sendCommand("escape")
-                    else -> sendCommand("shift_tab")
+            Gesture.DOUBLE_TAP -> {
+                // No action at root level
+            }
+            Gesture.LONG_PRESS -> {
+                // Voice input → auto-focus Input area
+                if (voiceHandler.isListening()) {
+                    voiceHandler.cancel()
+                } else {
+                    updateFocus(focus.copy(focusedArea = FocusArea.INPUT))
+                    requestVoicePermissionAndStart()
                 }
             }
-            Gesture.SWIPE_RIGHT -> {
-                when (currentMode) {
-                    TerminalState.Mode.COMMAND -> sendCommand("tab")
-                    else -> sendCommand("tab")
-                }
-            }
-            Gesture.ESCAPE -> sendCommand("escape")
         }
+    }
+
+    // Level 1: Content Area (Scroll mode only)
+    private fun handleContentGesture(gesture: Gesture) {
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> scrollUp()
+            Gesture.SWIPE_BACKWARD -> scrollDownOrPushThrough()
+            Gesture.TAP -> {
+                // Scroll to bottom
+                scrollToBottom()
+            }
+            Gesture.DOUBLE_TAP -> exitToAreaSelect()
+            Gesture.LONG_PRESS -> {
+                if (voiceHandler.isListening()) {
+                    voiceHandler.cancel()
+                } else {
+                    requestVoicePermissionAndStart()
+                }
+            }
+        }
+    }
+
+    /**
+     * Scroll down, or if at bottom, "push through" to Input area at level 0
+     */
+    private fun scrollDownOrPushThrough() {
+        val current = terminalState.value
+        // Use same max as scrollToBottom (lines.size - 1)
+        val maxScroll = maxOf(0, current.lines.size - 1)
+
+        Log.d(GlassesApp.TAG, "scrollDownOrPushThrough: pos=${current.scrollPosition}, max=$maxScroll, lines=${current.lines.size}")
+
+        if (current.scrollPosition >= maxScroll) {
+            // Already at bottom - push through to Input area at level 0
+            Log.d(GlassesApp.TAG, "Pushing through to INPUT")
+            updateFocus(current.focus.copy(
+                focusedArea = FocusArea.INPUT,
+                level = FocusLevel.AREA_SELECT
+            ))
+        } else {
+            scrollDown()
+        }
+    }
+
+    // Level 1: Input Area
+    private fun handleInputGesture(gesture: Gesture) {
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> {
+                // Send up arrow to Claude Code
+                sendCommand("up")
+            }
+            Gesture.SWIPE_BACKWARD -> {
+                // Send down arrow to Claude Code
+                sendCommand("down")
+            }
+            Gesture.TAP -> {
+                // Send enter to Claude Code
+                sendCommand("enter")
+            }
+            Gesture.DOUBLE_TAP -> exitToAreaSelect()
+            Gesture.LONG_PRESS -> {
+                if (voiceHandler.isListening()) {
+                    voiceHandler.cancel()
+                } else {
+                    requestVoicePermissionAndStart()
+                }
+            }
+        }
+    }
+
+    // Level 1: Command Bar
+    private fun handleCommandGesture(gesture: Gesture) {
+        val current = terminalState.value
+        val focus = current.focus
+        val commands = QuickCommand.values()
+
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> {
+                if (focus.commandIndex == 0) {
+                    // At first command, push through to Input area
+                    updateFocus(focus.copy(
+                        focusedArea = FocusArea.INPUT,
+                        level = FocusLevel.AREA_SELECT
+                    ))
+                } else {
+                    // Previous command (left)
+                    val newIndex = focus.commandIndex - 1
+                    updateFocus(focus.copy(commandIndex = newIndex))
+                }
+            }
+            Gesture.SWIPE_BACKWARD -> {
+                // Next command (right)
+                val newIndex = minOf(commands.size - 1, focus.commandIndex + 1)
+                updateFocus(focus.copy(commandIndex = newIndex))
+            }
+            Gesture.TAP -> {
+                // Execute selected command
+                val command = commands.getOrNull(focus.commandIndex)
+                if (command != null) {
+                    sendCommand(command.key)
+                }
+            }
+            Gesture.DOUBLE_TAP -> {
+                // Go back to level 0 and highlight INPUT
+                updateFocus(focus.copy(
+                    focusedArea = FocusArea.INPUT,
+                    level = FocusLevel.AREA_SELECT
+                ))
+            }
+            Gesture.LONG_PRESS -> {
+                if (voiceHandler.isListening()) {
+                    voiceHandler.cancel()
+                } else {
+                    requestVoicePermissionAndStart()
+                }
+            }
+        }
+    }
+
+    // ============== Focus Update Helpers ==============
+
+    private fun updateFocus(newFocus: FocusState) {
+        val current = terminalState.value
+
+        // Auto-scroll to bottom when entering INPUT or COMMAND areas
+        if (newFocus.focusedArea != current.focus.focusedArea &&
+            (newFocus.focusedArea == FocusArea.INPUT || newFocus.focusedArea == FocusArea.COMMAND)) {
+            scrollToBottom()
+        }
+
+        terminalState.value = current.copy(focus = newFocus)
+    }
+
+    private fun exitToAreaSelect() {
+        val current = terminalState.value
+        val focus = current.focus
+        // Don't use updateFocus to avoid auto-scroll behavior
+        terminalState.value = current.copy(
+            focus = focus.copy(
+                level = FocusLevel.AREA_SELECT,
+                contentMode = ContentMode.PAGE,
+                selectionStart = null
+            )
+        )
+    }
+
+    private fun selectInputOption() {
+        val current = terminalState.value
+        val focus = current.focus
+
+        when (val prompt = current.detectedPrompt) {
+            is DetectedPrompt.MultipleChoice -> {
+                // Send the number key for the selected option
+                val optionNum = focus.inputOptionIndex + 1
+                sendCommand("$optionNum")
+            }
+            is DetectedPrompt.Confirmation -> {
+                sendCommand(if (focus.inputOptionIndex == 0) "y" else "n")
+            }
+            is DetectedPrompt.TextInput -> {
+                // Send pending input text
+                if (focus.pendingInput.isNotEmpty()) {
+                    sendVoiceInput(focus.pendingInput)
+                    updateFocus(focus.copy(pendingInput = ""))
+                }
+            }
+            DetectedPrompt.None -> {
+                // Send pending input if any
+                if (focus.pendingInput.isNotEmpty()) {
+                    sendVoiceInput(focus.pendingInput)
+                    updateFocus(focus.copy(pendingInput = ""))
+                }
+            }
+        }
+    }
+
+    // ============== Scroll Helpers ==============
+
+    private fun scrollToLine(lineIndex: Int) {
+        val current = terminalState.value
+        terminalState.value = current.copy(
+            scrollPosition = lineIndex,
+            scrollTrigger = current.scrollTrigger + 1
+        )
     }
 
     private fun scrollToBottom() {
         val current = terminalState.value
-        // Scroll to last item index so it appears at top, which effectively shows the bottom
         val lastIndex = maxOf(0, current.lines.size - 1)
-        Log.d(GlassesApp.TAG, "scrollToBottom: currentPos=${current.scrollPosition}, lines=${current.lines.size}, scrollingTo=$lastIndex")
-        // Increment trigger to force scroll even if position unchanged
+        Log.d(GlassesApp.TAG, "scrollToBottom: scrollingTo=$lastIndex")
         terminalState.value = current.copy(
             scrollPosition = lastIndex,
             scrollTrigger = current.scrollTrigger + 1
@@ -196,24 +596,177 @@ class HudActivity : ComponentActivity() {
 
     private fun scrollDown() {
         val current = terminalState.value
-        val maxScroll = maxOf(0, current.lines.size - current.visibleLines)
+        // Use same max as scrollToBottom (lines.size - 1) for consistency
+        val maxScroll = maxOf(0, current.lines.size - 1)
         val newPosition = minOf(maxScroll, current.scrollPosition + current.visibleLines)
         terminalState.value = current.copy(scrollPosition = newPosition)
-    }
-
-    private fun toggleMode() {
-        val current = terminalState.value
-        val newMode = when (current.mode) {
-            TerminalState.Mode.SCROLL -> TerminalState.Mode.NAVIGATE
-            TerminalState.Mode.NAVIGATE -> TerminalState.Mode.COMMAND
-            TerminalState.Mode.COMMAND -> TerminalState.Mode.SCROLL
-        }
-        terminalState.value = current.copy(mode = newMode)
     }
 
     private fun sendCommand(command: String) {
         phoneConnection.sendToPhone("""{"type":"command","command":"$command"}""")
     }
+
+    // ============== Voice Recognition Methods ==============
+
+    private fun requestVoicePermissionAndStart() {
+        when {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED -> {
+                startVoiceRecognition()
+            }
+            else -> {
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
+    private fun startVoiceRecognition() {
+        Log.d(GlassesApp.TAG, "Starting voice recognition")
+        voiceHandler.startListening { result ->
+            handleVoiceResult(result)
+        }
+    }
+
+    private fun handleVoiceResult(result: GlassesVoiceHandler.VoiceResult) {
+        when (result) {
+            is GlassesVoiceHandler.VoiceResult.Text -> {
+                Log.d(GlassesApp.TAG, "Voice input text: ${result.text}")
+                // Send text directly to server
+                sendVoiceInput(result.text)
+                // Focus on INPUT area to show the result
+                val current = terminalState.value
+                val focus = current.focus
+                updateFocus(focus.copy(
+                    focusedArea = FocusArea.INPUT,
+                    level = FocusLevel.AREA_SELECT
+                ))
+            }
+            is GlassesVoiceHandler.VoiceResult.Command -> {
+                Log.d(GlassesApp.TAG, "Voice command: ${result.command}")
+                handleVoiceCommand(result.command)
+            }
+            is GlassesVoiceHandler.VoiceResult.Error -> {
+                Log.e(GlassesApp.TAG, "Voice error: ${result.message}")
+                // Error is already shown via voiceState, auto-dismiss after delay
+                lifecycleScope.launch {
+                    delay(3000)
+                    val current = terminalState.value
+                    if (current.voiceState is VoiceInputState.Error) {
+                        terminalState.value = current.copy(
+                            voiceState = VoiceInputState.Idle,
+                            voiceText = ""
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun sendVoiceInput(text: String) {
+        // Send voice input to phone app for forwarding to server
+        val escapedText = text.replace("\"", "\\\"").replace("\n", "\\n")
+        phoneConnection.sendToPhone("""{"type":"voice_input","text":"$escapedText"}""")
+    }
+
+    /**
+     * Parse terminal lines to detect Claude's current prompt.
+     * Finds the bottom-most ❯ character which marks the current input.
+     */
+    private fun parsePrompt(lines: List<String>): DetectedPrompt {
+        // Find the bottom-most line starting with ❯ (the current prompt)
+        val promptLineIndex = lines.indexOfLast { line ->
+            line.trimStart().startsWith("❯") || line.contains("❯")
+        }
+
+        if (promptLineIndex == -1) {
+            return DetectedPrompt.None
+        }
+
+        val promptLine = lines[promptLineIndex]
+        val promptText = promptLine.substringAfter("❯").trim()
+
+        // Look at lines below the prompt for options (multiple choice)
+        val linesBelow = lines.drop(promptLineIndex + 1).take(10)
+
+        // Check for numbered options: [1] Option, [2] Option, etc.
+        val numberedOptions = linesBelow.mapNotNull { line ->
+            val match = Regex("""^\s*\[(\d+)\]\s*(.+)$""").find(line)
+            match?.groupValues?.get(2)?.trim()
+        }
+        if (numberedOptions.size >= 2) {
+            return DetectedPrompt.MultipleChoice(numberedOptions, 0)
+        }
+
+        // Check for Yes/No confirmation patterns
+        if (promptText.contains(Regex("""\([Yy]/[Nn]\)|\[[Yy]/[Nn]\]|\(yes/no\)""", RegexOption.IGNORE_CASE))) {
+            val yesDefault = promptText.contains(Regex("""\(Y/|\[Y/"""))
+            return DetectedPrompt.Confirmation(yesDefault)
+        }
+
+        // Otherwise it's a text input prompt (the line after ❯ is the current input)
+        return DetectedPrompt.TextInput(promptText.ifEmpty { "Type here..." })
+    }
+
+    private fun handleVoiceCommand(command: String) {
+        // Handle special voice commands locally
+        val current = terminalState.value
+        val focus = current.focus
+
+        when (command) {
+            "escape" -> sendCommand("escape")
+            "scroll up" -> scrollUp()
+            "scroll down" -> scrollDown()
+            "switch mode", "navigate mode", "input" -> {
+                // Focus on input area
+                updateFocus(focus.copy(
+                    focusedArea = FocusArea.INPUT,
+                    level = FocusLevel.AREA_FOCUSED
+                ))
+            }
+            "scroll mode", "content" -> {
+                // Focus on content area
+                updateFocus(focus.copy(
+                    focusedArea = FocusArea.CONTENT,
+                    level = FocusLevel.AREA_FOCUSED
+                ))
+            }
+            "command mode", "commands" -> {
+                // Focus on command bar
+                updateFocus(focus.copy(
+                    focusedArea = FocusArea.COMMAND,
+                    level = FocusLevel.AREA_FOCUSED
+                ))
+            }
+            "back", "exit" -> {
+                // Return to area selection
+                exitToAreaSelect()
+            }
+            else -> {
+                // Unknown command, send as text input
+                sendVoiceInput(command)
+            }
+        }
+    }
+
+    private fun showVoiceError(message: String) {
+        terminalState.value = terminalState.value.copy(
+            voiceState = VoiceInputState.Error(message),
+            voiceText = ""
+        )
+        // Auto-dismiss after 3 seconds
+        lifecycleScope.launch {
+            delay(3000)
+            val current = terminalState.value
+            if (current.voiceState is VoiceInputState.Error) {
+                terminalState.value = current.copy(
+                    voiceState = VoiceInputState.Idle,
+                    voiceText = ""
+                )
+            }
+        }
+    }
+
+    // ============== Phone Message Handling ==============
 
     private fun handlePhoneMessage(json: String) {
         try {
@@ -225,7 +778,6 @@ class HudActivity : ComponentActivity() {
                     // Parse terminal update from phone app
                     val linesArray = msg.optJSONArray("lines")
                     val cursorPos = msg.optInt("cursorPosition", 0)
-                    val mode = msg.optString("mode", "SCROLL")
 
                     val lines = mutableListOf<String>()
                     if (linesArray != null) {
@@ -235,14 +787,30 @@ class HudActivity : ComponentActivity() {
                     }
 
                     val current = terminalState.value
+                    // Auto-scroll on first content or if in Content area and not in page scroll mode
+                    val isFirstContent = current.lines.isEmpty()
+                    val shouldAutoScroll = isFirstContent || (
+                        current.focusedArea == FocusArea.CONTENT &&
+                        current.contentMode != ContentMode.PAGE
+                    )
+                    val newScrollPosition = if (shouldAutoScroll) {
+                        maxOf(0, lines.size - 1)
+                    } else {
+                        current.scrollPosition
+                    }
+                    // Parse prompt from terminal lines
+                    val detectedPrompt = parsePrompt(lines)
+
                     terminalState.value = current.copy(
                         lines = lines,
                         cursorLine = cursorPos,
-                        scrollPosition = maxOf(0, lines.size - current.visibleLines),
-                        isConnected = true
+                        scrollPosition = newScrollPosition,
+                        scrollTrigger = if (shouldAutoScroll) current.scrollTrigger + 1 else current.scrollTrigger,
+                        isConnected = true,
+                        detectedPrompt = detectedPrompt
                     )
 
-                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines")
+                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines, prompt: $detectedPrompt")
                 }
                 else -> {
                     Log.d(GlassesApp.TAG, "Unknown message type: $type")
@@ -255,6 +823,7 @@ class HudActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        voiceHandler.cleanup()
         phoneConnection.stop()
     }
 }

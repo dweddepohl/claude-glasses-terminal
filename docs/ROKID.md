@@ -23,10 +23,12 @@ Comprehensive documentation for Rokid AR glasses hardware and SDK.
 ### Input Methods
 
 **Temple Touchpad:**
+- Located on right temple
+- Linear touchpad with two swipe directions only:
+  - Forward (towards eyes)
+  - Backward (towards ear)
 - Tap (single, double)
 - Long press
-- Swipe up/down/left/right
-- Located on right temple
 
 **Physical Buttons:**
 - Home button
