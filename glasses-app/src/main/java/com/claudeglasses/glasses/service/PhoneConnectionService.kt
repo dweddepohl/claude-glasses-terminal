@@ -2,18 +2,25 @@ package com.claudeglasses.glasses.service
 
 import android.content.Context
 import android.util.Log
+import com.claudeglasses.glasses.debug.DebugPhoneClient
 import com.rokid.cxr.Caps
 import com.rokid.cxr.CXRServiceBridge
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Service to handle communication with the phone app via CXR-S SDK
+ * Supports debug mode for emulator testing via WebSocket
  *
  * Receives terminal updates from phone and sends gesture/voice commands back
  */
 class PhoneConnectionService(
     private val context: Context,
-    private val onMessageReceived: (String) -> Unit
+    private val onMessageReceived: (String) -> Unit,
+    private val debugMode: Boolean = false,
+    private val debugHost: String = DebugPhoneClient.DEFAULT_HOST,
+    private val debugPort: Int = DebugPhoneClient.DEFAULT_PORT
 ) {
     companion object {
         private const val TAG = "PhoneConnection"
@@ -23,25 +30,65 @@ class PhoneConnectionService(
     }
 
     private var cxrBridge: CXRServiceBridge? = null
+    private var debugClient: DebugPhoneClient? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var isRunning = false
     private var isConnected = false
     private var connectedDeviceName: String? = null
     private var connectedDeviceMac: String? = null
 
+    private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
+    val connectionState: StateFlow<ConnectionState> = _connectionState
+
+    sealed class ConnectionState {
+        object Disconnected : ConnectionState()
+        object Connecting : ConnectionState()
+        data class Connected(val info: String) : ConnectionState()
+        data class Error(val message: String) : ConnectionState()
+    }
+
     /**
-     * Start listening for phone connections via CXR-S SDK
+     * Start listening for phone connections via CXR-S SDK or WebSocket (debug mode)
      */
     fun startListening() {
         if (isRunning) return
         isRunning = true
 
-        Log.d(TAG, "Starting CXR Service Bridge for phone connection")
+        if (debugMode) {
+            Log.d(TAG, "Starting in DEBUG MODE - connecting via WebSocket to $debugHost:$debugPort")
+            startDebugConnection()
+        } else {
+            Log.d(TAG, "Starting CXR Service Bridge for phone connection")
+            try {
+                initializeBridge()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error initializing CXR bridge", e)
+                _connectionState.value = ConnectionState.Error(e.message ?: "Unknown error")
+            }
+        }
+    }
 
-        try {
-            initializeBridge()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing CXR bridge", e)
+    private fun startDebugConnection() {
+        _connectionState.value = ConnectionState.Connecting
+
+        debugClient = DebugPhoneClient().apply {
+            onMessageFromPhone = { message ->
+                Log.d(TAG, "Debug: received from phone: ${message.take(100)}")
+                onMessageReceived(message)
+            }
+            onConnected = {
+                isConnected = true
+                connectedDeviceName = "Debug Phone (WebSocket)"
+                _connectionState.value = ConnectionState.Connected("Debug Mode: $debugHost:$debugPort")
+                Log.i(TAG, "Debug: connected to phone app")
+            }
+            onDisconnected = {
+                isConnected = false
+                connectedDeviceName = null
+                _connectionState.value = ConnectionState.Disconnected
+                Log.i(TAG, "Debug: disconnected from phone app")
+            }
+            connect(debugHost, debugPort)
         }
     }
 
@@ -102,14 +149,20 @@ class PhoneConnectionService(
             return
         }
 
-        scope.launch {
-            try {
-                val caps = Caps()
-                caps.write(message)
-                val result = cxrBridge?.sendMessage(MSG_TYPE_COMMAND, caps)
-                Log.d(TAG, "Sent to phone: ${message.take(50)}..., result: $result")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error sending to phone", e)
+        if (debugMode) {
+            // Send via debug WebSocket client
+            debugClient?.sendToPhone(message)
+            Log.d(TAG, "Debug: sent to phone: ${message.take(50)}...")
+        } else {
+            scope.launch {
+                try {
+                    val caps = Caps()
+                    caps.write(message)
+                    val result = cxrBridge?.sendMessage(MSG_TYPE_COMMAND, caps)
+                    Log.d(TAG, "Sent to phone: ${message.take(50)}..., result: $result")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending to phone", e)
+                }
             }
         }
     }
@@ -162,13 +215,19 @@ class PhoneConnectionService(
         isConnected = false
         scope.cancel()
 
-        try {
-            cxrBridge?.disconnectCXRDevice()
-            cxrBridge = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping CXR bridge", e)
+        if (debugMode) {
+            debugClient?.disconnect()
+            debugClient = null
+        } else {
+            try {
+                cxrBridge?.disconnectCXRDevice()
+                cxrBridge = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping CXR bridge", e)
+            }
         }
 
+        _connectionState.value = ConnectionState.Disconnected
         Log.d(TAG, "Phone connection service stopped")
     }
 }

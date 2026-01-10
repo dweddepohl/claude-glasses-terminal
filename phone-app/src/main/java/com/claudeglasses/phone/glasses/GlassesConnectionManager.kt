@@ -6,13 +6,17 @@ import android.bluetooth.le.*
 import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
+import com.claudeglasses.phone.debug.DebugGlassesServer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
 /**
  * Manages connection to Rokid Glasses using CXR-M SDK
+ * Supports debug mode for emulator testing via WebSocket
  */
 class GlassesConnectionManager(private val context: Context) {
 
@@ -41,6 +45,14 @@ class GlassesConnectionManager(private val context: Context) {
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager?.adapter
     private var bleScanner: BluetoothLeScanner? = null
+
+    // Debug mode WebSocket server for emulator testing
+    private var debugServer: DebugGlassesServer? = null
+    private var _debugModeEnabled = MutableStateFlow(false)
+    val debugModeEnabled: StateFlow<Boolean> = _debugModeEnabled.asStateFlow()
+
+    // Callback for messages from glasses (both BLE and debug modes)
+    var onMessageFromGlasses: ((String) -> Unit)? = null
 
     // TODO: Replace with actual CXR-M SDK client
     // private var cxrClient: CxrClient? = null
@@ -116,24 +128,79 @@ class GlassesConnectionManager(private val context: Context) {
     }
 
     fun disconnect() {
+        if (_debugModeEnabled.value) {
+            stopDebugServer()
+        }
         // TODO: cxrClient?.disconnect()
         _connectionState.value = ConnectionState.Disconnected
+    }
+
+    // ============== Debug Mode Methods ==============
+
+    /**
+     * Enable debug mode for emulator testing.
+     * Starts a WebSocket server that glasses app can connect to.
+     */
+    fun enableDebugMode() {
+        if (_debugModeEnabled.value) {
+            Log.d(TAG, "Debug mode already enabled")
+            return
+        }
+
+        Log.i(TAG, "Enabling debug mode - starting WebSocket server on port ${DebugGlassesServer.DEFAULT_PORT}")
+        _debugModeEnabled.value = true
+
+        debugServer = DebugGlassesServer().apply {
+            onGlassesConnected = {
+                _connectionState.value = ConnectionState.Connected("Debug Glasses (WebSocket)")
+            }
+            onGlassesDisconnected = {
+                _connectionState.value = ConnectionState.Disconnected
+            }
+            onMessageFromGlasses = { message ->
+                this@GlassesConnectionManager.onMessageFromGlasses?.invoke(message)
+            }
+            start()
+        }
+
+        // Update state to show we're waiting for connection
+        _connectionState.value = ConnectionState.Scanning
+    }
+
+    /**
+     * Disable debug mode and stop the WebSocket server.
+     */
+    fun disableDebugMode() {
+        stopDebugServer()
+        _debugModeEnabled.value = false
+        _connectionState.value = ConnectionState.Disconnected
+        Log.i(TAG, "Debug mode disabled")
+    }
+
+    private fun stopDebugServer() {
+        debugServer?.stop()
+        debugServer = null
     }
 
     /**
      * Send terminal output to glasses for display
      */
     fun sendToGlasses(lines: List<String>, cursorPosition: Int, mode: String) {
-        val message = GlassesMessage(
-            type = "terminal_update",
-            lines = lines,
-            cursorPosition = cursorPosition,
-            mode = mode,
-            timestamp = System.currentTimeMillis()
-        )
+        val message = JSONObject().apply {
+            put("type", "terminal_update")
+            put("lines", JSONArray(lines))
+            put("cursorPosition", cursorPosition)
+            put("mode", mode)
+            put("timestamp", System.currentTimeMillis())
+        }
 
-        // TODO: Use CXR-M SDK to send data
-        // cxrClient?.sendData(message.toJson().toByteArray())
+        if (_debugModeEnabled.value) {
+            // Send via debug WebSocket server
+            debugServer?.sendToGlasses(message.toString())
+        } else {
+            // TODO: Use CXR-M SDK to send data
+            // cxrClient?.sendData(message.toString().toByteArray())
+        }
 
         Log.d(TAG, "Sending to glasses: ${lines.size} lines, mode: $mode")
     }
@@ -146,12 +213,4 @@ class GlassesConnectionManager(private val context: Context) {
         // TODO: Use CXR-M SDK APK installation feature
         // cxrClient?.installApk(apkPath)
     }
-
-    data class GlassesMessage(
-        val type: String,
-        val lines: List<String>,
-        val cursorPosition: Int,
-        val mode: String,
-        val timestamp: Long
-    )
 }
