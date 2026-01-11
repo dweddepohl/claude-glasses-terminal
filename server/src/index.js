@@ -426,10 +426,13 @@ class ClaudeTerminalServer {
       'page_down': 'PageDown'
     };
 
-    // Special handling for ctrl_u: send End first to ensure entire line is cleared
+
     if (key === 'ctrl_u') {
       try {
-        execSync(`tmux send-keys -t ${this.sessionName} End C-u`);
+        execSync(`tmux send-keys -t ${this.sessionName} C-u`);
+        execSync(`tmux send-keys -t ${this.sessionName} C-k`);
+        execSync(`tmux send-keys -t ${this.sessionName} Delete`);
+        execSync(`tmux send-keys -t ${this.sessionName} BSpace`);
       } catch (e) {
         console.error('Error sending clear to tmux:', e.message);
       }
