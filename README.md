@@ -30,6 +30,10 @@ No keyboard needed. Hold the touchpad and speak naturally: *"Connect to our data
 
 Scroll through diffs, read Claude's explanations, and navigate the terminal - all with simple gestures on the temple touchpad. The monochrome green display blends into your environment while keeping the code visible.
 
+### Bootstrapped
+
+Wonder if you can really build something with just gestures and voice? This project is the answer. The screenshots above are from live development sessions where Claude Glasses was used to build Claude Glasses - reviewing diffs, dictating prompts, and navigating code all through the AR interface.
+
 ## Architecture
 
 ```
