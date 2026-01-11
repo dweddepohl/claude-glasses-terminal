@@ -120,6 +120,20 @@ sealed class DetectedPrompt {
 }
 
 /**
+ * Detected input section from terminal lines.
+ * The input section is identified by a horizontal line followed by the ❯ prompt.
+ */
+data class InputSection(
+    val lines: List<String> = emptyList(),           // Input lines (prompt area, excludes status)
+    val lineColors: List<LineColorType> = emptyList(),
+    val statusLine: String? = null,                   // Status line shown below input (tmux info)
+    val startIndex: Int = -1  // Index in terminal lines where input section starts (after horizontal line)
+) {
+    val isEmpty: Boolean get() = lines.isEmpty()
+    val hasPrompt: Boolean get() = lines.any { it.contains("❯") }
+}
+
+/**
  * Voice input states for HUD display
  */
 sealed class VoiceInputState {
@@ -151,6 +165,7 @@ data class TerminalState(
     val promptLineIndex: Int = -1,  // Line index of the ❯ prompt (for highlighting)
     val focus: FocusState = FocusState(),
     val detectedPrompt: DetectedPrompt = DetectedPrompt.None,
+    val inputSection: InputSection = InputSection(),  // Detected input section at bottom
     val displaySize: HudDisplaySize = HudDisplaySize.NORMAL,
     val isConnected: Boolean = false,
     val voiceState: VoiceInputState = VoiceInputState.Idle,
@@ -162,6 +177,19 @@ data class TerminalState(
     val selectedSessionIndex: Int = 0
 ) {
     val visibleLines: Int get() = displaySize.rows
+
+    // Content lines = all lines except input section
+    val contentLines: List<String> get() = if (inputSection.startIndex >= 0) {
+        lines.take(inputSection.startIndex)
+    } else {
+        lines
+    }
+
+    val contentLineColors: List<LineColorType> get() = if (inputSection.startIndex >= 0) {
+        lineColors.take(inputSection.startIndex)
+    } else {
+        lineColors
+    }
 
     // Convenience properties for focus state
     val focusLevel: FocusLevel get() = focus.level
@@ -329,13 +357,14 @@ fun HudScreen(
             Spacer(modifier = Modifier.height(4.dp))
 
             // CONTENT AREA - Terminal output (weight: fills remaining space)
+            // Uses contentLines which excludes the input section
             ContentArea(
-                lines = state.lines,
-                lineColors = state.lineColors,
+                lines = state.contentLines,
+                lineColors = state.contentLineColors,
                 listState = listState,
                 cursorLine = state.cursorLine,
-                promptLineIndex = state.promptLineIndex,
-                showPromptHighlight = inputFocused,  // Only highlight prompt when INPUT is active
+                promptLineIndex = -1,  // Prompt is now in input section, not content
+                showPromptHighlight = false,
                 contentMode = state.contentMode,
                 selectedLine = state.focus.selectedLine,
                 cursorPosition = state.focus.cursorPosition,
@@ -348,9 +377,10 @@ fun HudScreen(
             )
 
             // Calculate if at bottom (used for hiding input area and showing hints)
-            val isAtBottom = state.scrollPosition >= maxOf(0, state.lines.size - state.visibleLines)
+            val isAtBottom = state.scrollPosition >= maxOf(0, state.contentLines.size - state.visibleLines)
 
-            // INPUT AREA - Hidden when scrolled up to give more space for content
+            // INPUT AREA - Shows detected input section from terminal
+            // Hidden when scrolled up to give more space for content
             AnimatedVisibility(
                 visible = isAtBottom || inputFocused,
                 enter = fadeIn(),
@@ -359,9 +389,7 @@ fun HudScreen(
                 Column {
                     Spacer(modifier = Modifier.height(4.dp))
                     InputArea(
-                        detectedPrompt = state.detectedPrompt,
-                        pendingInput = state.focus.pendingInput,
-                        selectedOptionIndex = state.focus.inputOptionIndex,
+                        inputSection = state.inputSection,
                         fontSize = fontSize,
                         fontFamily = monoFontFamily,
                         alpha = inputAlpha,
@@ -627,20 +655,22 @@ private fun ContentLine(
 // INPUT AREA
 // ============================================================================
 
+/**
+ * Input area showing the detected input section from terminal lines.
+ * Displays actual terminal content instead of a replicated prompt.
+ * Status line (tmux info) is shown below the input box.
+ */
 @Composable
 private fun InputArea(
-    detectedPrompt: DetectedPrompt,
-    pendingInput: String,
-    selectedOptionIndex: Int,
+    inputSection: InputSection,
     fontSize: androidx.compose.ui.unit.TextUnit,
     fontFamily: FontFamily,
     alpha: Float,
     isFocused: Boolean,
     modifier: Modifier = Modifier
 ) {
-
-    // Collapse when no prompt detected and no pending input
-    if (detectedPrompt is DetectedPrompt.None && pendingInput.isEmpty()) {
+    // Show placeholder when no input section detected
+    if (inputSection.isEmpty) {
         Box(
             modifier = modifier
                 .fillMaxWidth()
@@ -651,7 +681,7 @@ private fun InputArea(
             contentAlignment = Alignment.CenterStart
         ) {
             Text(
-                text = "No prompt",
+                text = "No input",
                 color = HudColors.dimText,
                 fontSize = fontSize,
                 fontFamily = fontFamily
@@ -660,93 +690,75 @@ private fun InputArea(
         return
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .alpha(alpha)
-            .border(
-                width = if (isFocused) 2.dp else 1.dp,
-                color = if (isFocused) HudColors.green else HudColors.dimText.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(4.dp)
-            )
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-        when (detectedPrompt) {
-            is DetectedPrompt.MultipleChoice -> {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    detectedPrompt.options.forEachIndexed { index, option ->
-                        val isSelected = index == selectedOptionIndex
-                        Text(
-                            text = if (isSelected) "▶ $option" else "  $option",
-                            color = if (isSelected) HudColors.green else HudColors.primaryText,
-                            fontSize = fontSize,
-                            fontFamily = fontFamily,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                        )
+    Column(modifier = modifier.fillMaxWidth()) {
+        // Input box with prompt lines
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .alpha(alpha)
+                .border(
+                    width = if (isFocused) 2.dp else 1.dp,
+                    color = if (isFocused) HudColors.green else HudColors.dimText.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(4.dp)
+                )
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
+            // Input lines
+            Column(modifier = Modifier.fillMaxWidth()) {
+                inputSection.lines.forEachIndexed { index, line ->
+                    val lineColor = inputSection.lineColors.getOrNull(index) ?: LineColorType.NORMAL
+
+                    // Determine text color based on focus state and line content
+                    val textColor = when {
+                        !isFocused -> HudColors.dimText  // Grey when not focused
+                        line.contains("❯") -> HudColors.cyan  // Prompt line gets cyan
+                        lineColor == LineColorType.ADDITION -> HudColors.green
+                        lineColor == LineColorType.DELETION -> HudColors.dimText
+                        lineColor == LineColorType.HEADER -> HudColors.cyan
+                        else -> HudColors.primaryText  // Bright green when focused
                     }
-                }
-            }
 
-            is DetectedPrompt.Confirmation -> {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    val yesSelected = selectedOptionIndex == 0
                     Text(
-                        text = if (yesSelected) "▶ ✓ Yes" else "  ✓ Yes",
-                        color = if (yesSelected) HudColors.green else HudColors.primaryText,
+                        text = line,
+                        color = textColor,
                         fontSize = fontSize,
                         fontFamily = fontFamily,
-                        fontWeight = if (yesSelected) FontWeight.Bold else FontWeight.Normal
-                    )
-                    Text(
-                        text = if (!yesSelected) "▶ ✕ No" else "  ✕ No",
-                        color = if (!yesSelected) HudColors.green else HudColors.primaryText,
-                        fontSize = fontSize,
-                        fontFamily = fontFamily,
-                        fontWeight = if (!yesSelected) FontWeight.Bold else FontWeight.Normal
+                        lineHeight = fontSize,
+                        letterSpacing = 0.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
 
-            is DetectedPrompt.TextInput -> {
-                Row {
-                    Text(
-                        text = "❯ ",
-                        color = HudColors.cyan,
-                        fontSize = fontSize,
-                        fontFamily = fontFamily
-                    )
-                    Text(
-                        text = pendingInput.ifEmpty { detectedPrompt.placeholder },
-                        color = if (pendingInput.isNotEmpty()) HudColors.green else HudColors.dimText,
-                        fontSize = fontSize,
-                        fontFamily = fontFamily
-                    )
-                }
+            // Enter icon in bottom right when focused
+            if (isFocused) {
+                Text(
+                    text = "↵",
+                    color = HudColors.green,
+                    fontSize = fontSize,
+                    fontFamily = fontFamily,
+                    modifier = Modifier.align(Alignment.BottomEnd)
+                )
             }
+        }
 
-            DetectedPrompt.None -> {
-                // Show pending input with ❯ indicator
-                Row {
-                    Text(
-                        text = "❯ ",
-                        color = HudColors.cyan,
-                        fontSize = fontSize,
-                        fontFamily = fontFamily
-                    )
-                    Text(
-                        text = pendingInput.ifEmpty { "..." },
-                        color = if (pendingInput.isNotEmpty()) HudColors.green else HudColors.dimText,
-                        fontSize = fontSize,
-                        fontFamily = fontFamily
-                    )
-                }
-            }
+        // Status line below the input box (dimmed)
+        inputSection.statusLine?.let { status ->
+            Text(
+                text = status,
+                color = HudColors.dimText,
+                fontSize = fontSize,
+                fontFamily = fontFamily,
+                lineHeight = fontSize,
+                letterSpacing = 0.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
+            )
         }
     }
 }
