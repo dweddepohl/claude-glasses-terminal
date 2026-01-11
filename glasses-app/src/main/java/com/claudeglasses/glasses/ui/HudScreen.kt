@@ -44,14 +44,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Display size presets for the 480x398 pixel HUD
+ * Display size presets for the 480x640 portrait HUD
  * Each preset optimizes for different character counts vs readability
  */
 enum class HudDisplaySize(val fontSizeSp: Int, val cols: Int, val rows: Int, val label: String) {
-    COMPACT(10, 60, 25, "Compact"),     // Max characters, smaller text
-    NORMAL(12, 50, 20, "Normal"),       // Balanced
-    COMFORTABLE(14, 40, 16, "Comfortable"), // Larger, easier to read
-    LARGE(16, 35, 14, "Large")          // Maximum readability
+    COMPACT(10, 64, 40, "Compact"),     // Max characters, smaller text
+    NORMAL(12, 42, 33, "Normal"),       // Balanced
+    COMFORTABLE(14, 35, 28, "Comfortable"), // Larger, easier to read
+    LARGE(16, 30, 24, "Large")          // Maximum readability
 }
 
 /**
@@ -89,10 +89,21 @@ enum class QuickCommand(val icon: String, val label: String, val key: String) {
     ESCAPE("✕", "ESC", "escape"),
     CLEAR("⌫", "CLEAR", "ctrl_u"),
     ENTER("↵", "ENTER", "enter"),
-    SLASH("/", "SLASH", "slash"),
     SHIFT_TAB("⇤", "S-TAB", "shift_tab"),
-    TAB("⇥", "TAB", "tab"),
+    MORE("…", "MORE", "more_menu"),
     SESSION("◎", "SESSION", "list_sessions")
+}
+
+/**
+ * Items available in the MORE menu
+ */
+enum class MoreMenuItem(val icon: String, val label: String, val key: String) {
+    SLASH("/", "Slash", "slash"),
+    TAB("⇥", "Tab", "tab"),
+    BACKSLASH("\\", "Backslash", "backslash"),
+    CTRL_B("^B", "Ctrl-B", "ctrl_b"),
+    CTRL_O("^O", "Ctrl-O", "ctrl_o"),
+    CTRL_C("^C", "Ctrl-C", "ctrl_c")
 }
 
 /**
@@ -189,7 +200,10 @@ data class TerminalState(
     // Kill session confirmation state
     val showKillConfirmation: Boolean = false,
     val sessionToKill: String = "",
-    val killConfirmSelected: Int = 0  // 0 = Cancel (default), 1 = Kill
+    val killConfirmSelected: Int = 0,  // 0 = Cancel (default), 1 = Kill
+    // More menu state
+    val showMoreMenu: Boolean = false,
+    val selectedMoreIndex: Int = 0
 ) {
     val visibleLines: Int get() = displaySize.rows
 
@@ -491,6 +505,18 @@ fun HudScreen(
             KillSessionConfirmDialog(
                 sessionName = state.sessionToKill,
                 selectedOption = state.killConfirmSelected,
+                fontFamily = monoFontFamily
+            )
+        }
+
+        // More menu overlay
+        AnimatedVisibility(
+            visible = state.showMoreMenu,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            MoreMenuOverlay(
+                selectedIndex = state.selectedMoreIndex,
                 fontFamily = monoFontFamily
             )
         }
@@ -1370,8 +1396,8 @@ private fun KillSessionConfirmDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (selectedOption == 0) "▶" else "  ",
-                        color = HudColors.green,
+                        text = "▶",
+                        color = if (selectedOption == 0) HudColors.green else Color.Transparent,
                         fontSize = 14.sp,
                         fontFamily = fontFamily
                     )
@@ -1390,8 +1416,8 @@ private fun KillSessionConfirmDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (selectedOption == 1) "▶" else "  ",
-                        color = HudColors.error,
+                        text = "▶",
+                        color = if (selectedOption == 1) HudColors.error else Color.Transparent,
                         fontSize = 14.sp,
                         fontFamily = fontFamily
                     )
@@ -1409,6 +1435,97 @@ private fun KillSessionConfirmDialog(
 
             Text(
                 text = "←→ Select  TAP Confirm",
+                color = HudColors.dimText,
+                fontSize = 10.sp,
+                fontFamily = fontFamily
+            )
+        }
+    }
+}
+
+/**
+ * More menu overlay showing additional commands
+ */
+@Composable
+private fun MoreMenuOverlay(
+    selectedIndex: Int,
+    fontFamily: FontFamily,
+    modifier: Modifier = Modifier
+) {
+    val items = MoreMenuItem.entries
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.95f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(24.dp)
+        ) {
+            Text(
+                text = "MORE COMMANDS",
+                color = HudColors.green,
+                fontSize = 16.sp,
+                fontFamily = fontFamily,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Menu items in a grid (2 columns)
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items.chunked(2).forEach { rowItems ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(24.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        rowItems.forEach { item ->
+                            val itemIndex = items.indexOf(item)
+                            val isSelected = itemIndex == selectedIndex
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = "▶",
+                                    color = if (isSelected) HudColors.green else Color.Transparent,
+                                    fontSize = 14.sp,
+                                    fontFamily = fontFamily
+                                )
+                                Text(
+                                    text = item.icon,
+                                    color = if (isSelected) HudColors.cyan else HudColors.primaryText,
+                                    fontSize = 14.sp,
+                                    fontFamily = fontFamily,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = item.label,
+                                    color = if (isSelected) HudColors.green else HudColors.dimText,
+                                    fontSize = 12.sp,
+                                    fontFamily = fontFamily
+                                )
+                            }
+                        }
+                        // Fill empty space if odd number of items in row
+                        if (rowItems.size == 1) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "↑↓ Navigate  TAP Select  2×TAP Cancel",
                 color = HudColors.dimText,
                 fontSize = 10.sp,
                 fontFamily = fontFamily

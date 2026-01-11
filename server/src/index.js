@@ -84,9 +84,9 @@ const CLAUDE_COMMAND = process.env.CLAUDE_COMMAND || 'claude';
 const DEFAULT_SESSION_NAME = 'claude-glasses';
 
 // Terminal configuration optimized for glasses HUD display
-// Rokid glasses have a narrow monochrome display
-const DEFAULT_COLS = 67;  // Narrower for HUD readability
-const DEFAULT_ROWS = 23;  // Enough rows to capture tall input sections
+// Rokid glasses display is 480x640 in portrait orientation
+const DEFAULT_COLS = 64;  // Portrait mode width
+const DEFAULT_ROWS = 31;  // More rows for portrait height
 
 class ClaudeTerminalServer {
   constructor() {
@@ -454,11 +454,14 @@ class ClaudeTerminalServer {
       'left': 'Left',
       'right': 'Right',
       'backspace': 'BSpace',
+      'ctrl_b': 'C-b',
       'ctrl_c': 'C-c',
       'ctrl_d': 'C-d',
+      'ctrl_o': 'C-o',
       'page_up': 'PageUp',
       'page_down': 'PageDown',
-      'slash': '/'
+      'slash': '/',
+      'backslash': '\\'
     };
 
 

@@ -31,11 +31,16 @@ Server (Node.js)  ←WebSocket→  Phone App (Android)  ←Bluetooth→  Glasses
 
 ### Display Constraints
 
-The Rokid glasses have a **640×480 monochrome green display**:
-- Terminal sized to **65 columns × ~15 rows**
+The Rokid glasses use **JBD 0.13" micro LED displays** (per eye):
+- Resolution: **640×480** (landscape) / **480×640** (portrait mode)
+- Pixel density: **~6,150 DPI** (extremely high - emulators cannot accurately simulate)
+- Monochrome green, 1500 nits brightness
+- Terminal sized to **64 columns × 31 rows**
 - Pure black background (transparent on AR display)
 - JetBrains Mono font for box-drawing characters
-- Font size dynamically calculated to fit 65 columns
+
+**Emulator note**: A 5" emulator at 480×640 is ~160 DPI vs ~6,150 DPI on real glasses.
+Text will appear much larger on emulator than on actual device.
 
 ### Gesture Modes
 
@@ -71,7 +76,7 @@ For emulator testing without physical glasses:
 - Glasses app connects to `10.0.2.2:8081` (Android emulator host alias)
 - Enabled automatically in debug builds via `BuildConfig.DEBUG`
 
-Create glasses emulator: 640×480 resolution, 5.0" screen
+Create glasses emulator: 480×640 resolution (portrait), 5.0" screen
 
 ## File Reference
 

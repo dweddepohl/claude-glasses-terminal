@@ -28,6 +28,7 @@ import com.claudeglasses.glasses.ui.FocusState
 import com.claudeglasses.glasses.ui.HudScreen
 import com.claudeglasses.glasses.ui.InputSection
 import com.claudeglasses.glasses.ui.LineColorType
+import com.claudeglasses.glasses.ui.MoreMenuItem
 import com.claudeglasses.glasses.ui.QuickCommand
 import com.claudeglasses.glasses.ui.TerminalState
 import com.claudeglasses.glasses.ui.VoiceInputState
@@ -341,6 +342,12 @@ class HudActivity : ComponentActivity() {
             return
         }
 
+        // If more menu is open, handle gestures for it
+        if (current.showMoreMenu) {
+            handleMoreMenuGesture(gesture)
+            return
+        }
+
         // If session picker is open, handle gestures for it
         if (current.showSessionPicker) {
             handleSessionPickerGesture(gesture)
@@ -468,6 +475,63 @@ class HudActivity : ComponentActivity() {
     private fun killSession(sessionName: String) {
         Log.d(GlassesApp.TAG, "Sending kill_session request for: $sessionName")
         phoneConnection.sendToPhone("""{"type":"kill_session","session":"$sessionName"}""")
+    }
+
+    private fun handleMoreMenuGesture(gesture: Gesture) {
+        val current = terminalState.value
+        val items = MoreMenuItem.entries
+        val itemCount = items.size
+
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> {
+                // Move selection up (or wrap to bottom)
+                val newIndex = if (current.selectedMoreIndex > 0) {
+                    current.selectedMoreIndex - 1
+                } else {
+                    itemCount - 1
+                }
+                terminalState.value = current.copy(selectedMoreIndex = newIndex)
+            }
+            Gesture.SWIPE_BACKWARD -> {
+                // Move selection down (or wrap to top)
+                val newIndex = if (current.selectedMoreIndex < itemCount - 1) {
+                    current.selectedMoreIndex + 1
+                } else {
+                    0
+                }
+                terminalState.value = current.copy(selectedMoreIndex = newIndex)
+            }
+            Gesture.TAP -> {
+                // Execute the selected command
+                val selectedItem = items[current.selectedMoreIndex]
+                Log.d(GlassesApp.TAG, "More menu: selected ${selectedItem.label}")
+                sendCommand(selectedItem.key)
+                // Close the menu and return to INPUT area
+                terminalState.value = current.copy(
+                    showMoreMenu = false,
+                    selectedMoreIndex = 0,
+                    focus = current.focus.copy(
+                        focusedArea = FocusArea.INPUT,
+                        level = FocusLevel.AREA_SELECT
+                    )
+                )
+            }
+            Gesture.DOUBLE_TAP -> {
+                // Cancel and close the menu, return to INPUT area
+                Log.d(GlassesApp.TAG, "More menu cancelled")
+                terminalState.value = current.copy(
+                    showMoreMenu = false,
+                    selectedMoreIndex = 0,
+                    focus = current.focus.copy(
+                        focusedArea = FocusArea.INPUT,
+                        level = FocusLevel.AREA_SELECT
+                    )
+                )
+            }
+            Gesture.LONG_PRESS -> {
+                // Ignore
+            }
+        }
     }
 
     private fun generateNewSessionName(existingSessions: List<String>): String {
@@ -635,11 +699,22 @@ class HudActivity : ComponentActivity() {
                 // Execute selected command
                 val command = commands.getOrNull(focus.commandIndex)
                 if (command != null) {
-                    if (command.key == "list_sessions") {
-                        // Request session list from server
-                        requestSessionList()
-                    } else {
-                        sendCommand(command.key)
+                    when (command.key) {
+                        "list_sessions" -> {
+                            // Request session list from server
+                            requestSessionList()
+                        }
+                        "more_menu" -> {
+                            // Show the more menu
+                            val current = terminalState.value
+                            terminalState.value = current.copy(
+                                showMoreMenu = true,
+                                selectedMoreIndex = 0
+                            )
+                        }
+                        else -> {
+                            sendCommand(command.key)
+                        }
                     }
                 }
             }
