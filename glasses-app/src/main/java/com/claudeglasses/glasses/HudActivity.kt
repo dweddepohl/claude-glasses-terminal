@@ -25,6 +25,7 @@ import com.claudeglasses.glasses.ui.FocusArea
 import com.claudeglasses.glasses.ui.FocusLevel
 import com.claudeglasses.glasses.ui.FocusState
 import com.claudeglasses.glasses.ui.HudScreen
+import com.claudeglasses.glasses.ui.InputSection
 import com.claudeglasses.glasses.ui.LineColorType
 import com.claudeglasses.glasses.ui.QuickCommand
 import com.claudeglasses.glasses.ui.TerminalState
@@ -209,8 +210,8 @@ class HudActivity : ComponentActivity() {
                 handleGesture(Gesture.LONG_PRESS)
                 return true
             }
-            KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_ENTER -> {
-                // Space/Enter = tap (confirm)
+            KeyEvent.KEYCODE_ENTER -> {
+                // Enter = tap (confirm)
                 handleGesture(Gesture.TAP)
                 return true
             }
@@ -798,6 +799,125 @@ class HudActivity : ComponentActivity() {
         return DetectedPrompt.TextInput(promptText.ifEmpty { "Type here..." })
     }
 
+    /**
+     * Detect the input section from terminal lines.
+     * The input section starts after a horizontal line and contains the ❯ prompt.
+     * Everything after a second horizontal line goes to the status area.
+     */
+    private fun detectInputSection(lines: List<String>, lineColors: List<LineColorType>): InputSection {
+        if (lines.isEmpty()) return InputSection()
+
+        // Find the ❯ prompt line from the bottom
+        val promptLineIndex = lines.indexOfLast { line ->
+            line.trimStart().startsWith("❯") || line.contains("❯")
+        }
+
+        if (promptLineIndex == -1) return InputSection()
+
+        // Horizontal line characters
+        val horizontalLineChars = setOf('━', '─', '═', '▀', '▄', '█', '―', '⎯')
+
+        fun isHorizontalLine(line: String): Boolean {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) return false
+            // A line is "horizontal" if >50% of its non-space chars are horizontal line chars
+            val horizontalCount = trimmed.count { it in horizontalLineChars }
+            return horizontalCount > trimmed.length / 2
+        }
+
+        // Strip horizontal line characters from a line but preserve spacing
+        fun stripHorizontalChars(line: String): String {
+            // Only strip if line starts with horizontal chars (prefix decoration)
+            val trimmed = line.trimStart()
+            if (trimmed.isEmpty()) return line
+
+            // Check if line starts with horizontal chars
+            val firstNonHorizontal = trimmed.indexOfFirst { it !in horizontalLineChars }
+            return if (firstNonHorizontal > 0) {
+                // Has horizontal prefix - remove it but keep the rest
+                trimmed.substring(firstNonHorizontal)
+            } else {
+                // No horizontal prefix - return as-is
+                line
+            }
+        }
+
+        // Search backwards from prompt to find the starting horizontal line
+        var horizontalLineIndex = -1
+        for (i in (promptLineIndex - 1) downTo maxOf(0, promptLineIndex - 10)) {
+            val line = lines[i]
+            if (isHorizontalLine(line)) {
+                horizontalLineIndex = i
+                break
+            }
+        }
+
+        // Input section starts AT the horizontal line (so it's excluded from content)
+        // But we skip the horizontal line when extracting input lines
+        val inputSectionStart = if (horizontalLineIndex >= 0) {
+            horizontalLineIndex  // Include horizontal line in "input section" so it's excluded from content
+        } else {
+            promptLineIndex
+        }
+
+        // Extract lines AFTER the horizontal line for display
+        val inputLinesStart = if (horizontalLineIndex >= 0) horizontalLineIndex + 1 else promptLineIndex
+        val allInputLines = lines.subList(inputLinesStart, lines.size)
+        val allInputColors = if (lineColors.size >= lines.size) {
+            lineColors.subList(inputLinesStart, lineColors.size)
+        } else {
+            emptyList()
+        }
+
+        // Find second horizontal line - everything after it goes to status
+        var secondHorizontalIndex = -1
+        for (i in allInputLines.indices) {
+            if (isHorizontalLine(allInputLines[i])) {
+                secondHorizontalIndex = i
+                break
+            }
+        }
+
+        // Split into input lines and status lines
+        val inputLines = mutableListOf<String>()
+        val inputColors = mutableListOf<LineColorType>()
+        val statusLines = mutableListOf<String>()
+
+        allInputLines.forEachIndexed { index, line ->
+            // Skip pure horizontal lines
+            if (isHorizontalLine(line)) return@forEachIndexed
+
+            val stripped = stripHorizontalChars(line)
+
+            // After second horizontal line = status area
+            if (secondHorizontalIndex >= 0 && index > secondHorizontalIndex) {
+                if (stripped.isNotBlank()) {
+                    statusLines.add(stripped)
+                }
+            } else {
+                // Before second horizontal line = input area (keep all lines for formatting)
+                inputLines.add(stripped)
+                if (index < allInputColors.size) {
+                    inputColors.add(allInputColors[index])
+                }
+            }
+        }
+
+        // Combine status lines into one
+        val statusLine = if (statusLines.isNotEmpty()) {
+            statusLines.joinToString("  ")
+        } else {
+            null
+        }
+
+        return InputSection(
+            lines = inputLines,
+            lineColors = inputColors,
+            statusLine = statusLine,
+            startIndex = inputSectionStart
+        )
+    }
+
     private fun handleVoiceCommand(command: String) {
         // Handle special voice commands locally
         val current = terminalState.value
@@ -894,26 +1014,32 @@ class HudActivity : ComponentActivity() {
                     }
 
                     val current = terminalState.value
-                    // Parse prompt from terminal lines
+                    // Detect input section (horizontal line + prompt at bottom)
+                    val inputSection = detectInputSection(lines, lineColors)
+                    // Parse prompt from terminal lines (for interaction hints)
                     val detectedPrompt = parsePrompt(lines)
                     // Find the prompt line index for highlighting
                     val promptLineIndex = lines.indexOfLast { line ->
                         line.trimStart().startsWith("❯") || line.contains("❯")
                     }
 
+                    // Content lines = everything except input section
+                    val contentLineCount = if (inputSection.startIndex >= 0) inputSection.startIndex else lines.size
+
                     // Only auto-scroll if:
                     // 1. Line count increased (new content added, not just changed)
                     // 2. User is NOT actively scrolling (in CONTENT area at AREA_FOCUSED level)
-                    val lineCountIncreased = lines.size > current.lines.size
+                    val previousContentCount = if (current.inputSection.startIndex >= 0) current.inputSection.startIndex else current.lines.size
+                    val lineCountIncreased = contentLineCount > previousContentCount
                     val userIsScrolling = current.focus.focusedArea == FocusArea.CONTENT &&
                                           current.focus.level == FocusLevel.AREA_FOCUSED
                     val shouldAutoScroll = lineCountIncreased && !userIsScrolling
 
                     val newScrollPosition = if (shouldAutoScroll) {
-                        maxOf(0, lines.size - 1)
+                        maxOf(0, contentLineCount - 1)
                     } else {
                         // Keep current scroll position, but clamp to valid range
-                        current.scrollPosition.coerceIn(0, maxOf(0, lines.size - 1))
+                        current.scrollPosition.coerceIn(0, maxOf(0, contentLineCount - 1))
                     }
                     val newScrollTrigger = if (shouldAutoScroll) {
                         current.scrollTrigger + 1
@@ -926,13 +1052,14 @@ class HudActivity : ComponentActivity() {
                         lineColors = lineColors,
                         cursorLine = cursorPos,
                         promptLineIndex = promptLineIndex,
+                        inputSection = inputSection,
                         scrollPosition = newScrollPosition,
                         scrollTrigger = newScrollTrigger,
                         isConnected = true,
                         detectedPrompt = detectedPrompt
                     )
 
-                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines (was ${current.lines.size}), promptLine=$promptLineIndex, autoScroll=$shouldAutoScroll")
+                    Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines, content=${contentLineCount}, inputSection=${inputSection.lines.size} lines, autoScroll=$shouldAutoScroll")
                 }
                 "sessions" -> {
                     // Session list from server
