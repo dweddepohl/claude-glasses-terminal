@@ -86,7 +86,7 @@ const DEFAULT_SESSION_NAME = 'claude-glasses';
 // Terminal configuration optimized for glasses HUD display
 // Rokid glasses have a narrow monochrome display
 const DEFAULT_COLS = 67;  // Narrower for HUD readability
-const DEFAULT_ROWS = 15;  // Fewer rows for glasses viewport
+const DEFAULT_ROWS = 23;  // Enough rows to capture tall input sections
 
 class ClaudeTerminalServer {
   constructor() {
@@ -236,6 +236,28 @@ class ClaudeTerminalServer {
     return true;
   }
 
+  killSession(name) {
+    // Cannot kill current session
+    if (name === this.sessionName) {
+      console.warn(`Cannot kill current session '${name}'`);
+      return false;
+    }
+
+    if (!this.sessionExists(name)) {
+      console.warn(`Session '${name}' does not exist`);
+      return false;
+    }
+
+    try {
+      execSync(`tmux kill-session -t ${name}`);
+      console.log(`Killed session '${name}'`);
+      return true;
+    } catch (e) {
+      console.error(`Failed to kill session '${name}':`, e.message);
+      return false;
+    }
+  }
+
   startOutputPolling() {
     // Poll tmux for output every 100ms
     this.pollInterval = setInterval(() => {
@@ -357,6 +379,18 @@ class ClaudeTerminalServer {
           }
           break;
 
+        case 'kill_session':
+          // Kill a tmux session
+          if (msg.session) {
+            const success = this.killSession(msg.session);
+            this.sendToClient(ws, {
+              type: 'session_killed',
+              session: msg.session,
+              success: success
+            });
+          }
+          break;
+
         default:
           console.warn('Unknown message type:', msg.type);
       }
@@ -423,7 +457,8 @@ class ClaudeTerminalServer {
       'ctrl_c': 'C-c',
       'ctrl_d': 'C-d',
       'page_up': 'PageUp',
-      'page_down': 'PageDown'
+      'page_down': 'PageDown',
+      'slash': '/'
     };
 
 

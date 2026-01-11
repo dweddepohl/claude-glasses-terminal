@@ -136,6 +136,13 @@ fun MainScreen() {
                             terminalClient.switchSession(session)
                         }
                     }
+                    "kill_session" -> {
+                        val session = json.optString("session", "")
+                        android.util.Log.d("MainScreen", "Killing session: $session")
+                        if (session.isNotEmpty()) {
+                            terminalClient.killSession(session)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("MainScreen", "Error parsing glasses message", e)

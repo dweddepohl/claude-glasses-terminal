@@ -89,6 +89,7 @@ enum class QuickCommand(val icon: String, val label: String, val key: String) {
     ESCAPE("✕", "ESC", "escape"),
     CLEAR("⌫", "CLEAR", "ctrl_u"),
     ENTER("↵", "ENTER", "enter"),
+    SLASH("/", "SLASH", "slash"),
     SHIFT_TAB("⇤", "S-TAB", "shift_tab"),
     TAB("⇥", "TAB", "tab"),
     SESSION("◎", "SESSION", "list_sessions")
@@ -184,7 +185,11 @@ data class TerminalState(
     val showSessionPicker: Boolean = false,
     val availableSessions: List<String> = emptyList(),
     val currentSession: String = "",
-    val selectedSessionIndex: Int = 0
+    val selectedSessionIndex: Int = 0,
+    // Kill session confirmation state
+    val showKillConfirmation: Boolean = false,
+    val sessionToKill: String = "",
+    val killConfirmSelected: Int = 0  // 0 = Cancel (default), 1 = Kill
 ) {
     val visibleLines: Int get() = displaySize.rows
 
@@ -282,8 +287,9 @@ fun HudScreen(
     val doubleTapTimeout = 300L
 
     // Auto-scroll when position or trigger changes
+    // Use contentLines (not lines) since that's what the LazyColumn displays
     LaunchedEffect(state.scrollPosition, state.scrollTrigger) {
-        if (state.lines.isNotEmpty() && state.scrollPosition < state.lines.size) {
+        if (state.contentLines.isNotEmpty() && state.scrollPosition < state.contentLines.size) {
             Log.d("HudScreen", "Auto-scrolling to position ${state.scrollPosition}")
             listState.animateScrollToItem(state.scrollPosition)
         }
@@ -391,6 +397,10 @@ fun HudScreen(
 
             // INPUT AREA - Shows detected input section from terminal
             // Hidden when scrolled up to give more space for content
+            // Limited to ensure at least 1 content line + status bar + command bar remain visible
+            // Reserve: 2 lines for status, 1 minimum content, 2 lines for command bar = 5 lines
+            val maxInputLines = (state.visibleLines - 5).coerceIn(3, 10)
+
             AnimatedVisibility(
                 visible = isAtBottom || inputFocused,
                 enter = fadeIn(),
@@ -403,7 +413,8 @@ fun HudScreen(
                         fontSize = fontSize,
                         fontFamily = monoFontFamily,
                         alpha = inputAlpha,
-                        isFocused = inputFocused && state.focusLevel != FocusLevel.AREA_SELECT
+                        isFocused = inputFocused && state.focusLevel != FocusLevel.AREA_SELECT,
+                        maxLines = maxInputLines
                     )
                 }
             }
@@ -467,6 +478,19 @@ fun HudScreen(
                 sessions = state.availableSessions,
                 currentSession = state.currentSession,
                 selectedIndex = state.selectedSessionIndex,
+                fontFamily = monoFontFamily
+            )
+        }
+
+        // Kill session confirmation dialog
+        AnimatedVisibility(
+            visible = state.showKillConfirmation,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            KillSessionConfirmDialog(
+                sessionName = state.sessionToKill,
+                selectedOption = state.killConfirmSelected,
                 fontFamily = monoFontFamily
             )
         }
@@ -670,6 +694,9 @@ private fun ContentLine(
  * Input area showing the detected input section from terminal lines.
  * Displays actual terminal content instead of a replicated prompt.
  * Status line (tmux info) is shown below the input box.
+ *
+ * The input area is limited to maxLines to ensure content area and command bar
+ * remain visible. When truncated, shows the last maxLines of input.
  */
 @Composable
 private fun InputArea(
@@ -678,6 +705,7 @@ private fun InputArea(
     fontFamily: FontFamily,
     alpha: Float,
     isFocused: Boolean,
+    maxLines: Int = 8,  // Default max lines for input area
     modifier: Modifier = Modifier
 ) {
     // Show placeholder when no input section detected
@@ -701,6 +729,19 @@ private fun InputArea(
         return
     }
 
+    // Limit lines shown to maxLines, taking the last lines if truncated
+    val isTruncated = inputSection.lines.size > maxLines
+    val visibleLines = if (isTruncated) {
+        inputSection.lines.takeLast(maxLines)
+    } else {
+        inputSection.lines
+    }
+    val visibleLineColors = if (isTruncated) {
+        inputSection.lineColors.takeLast(maxLines)
+    } else {
+        inputSection.lineColors
+    }
+
     Column(modifier = modifier.fillMaxWidth()) {
         // Input box with prompt lines
         Box(
@@ -716,8 +757,20 @@ private fun InputArea(
         ) {
             // Input lines
             Column(modifier = Modifier.fillMaxWidth()) {
-                inputSection.lines.forEachIndexed { index, line ->
-                    val lineColor = inputSection.lineColors.getOrNull(index) ?: LineColorType.NORMAL
+                // Show truncation indicator if there are more lines above
+                if (isTruncated) {
+                    Text(
+                        text = "···",
+                        color = HudColors.dimText,
+                        fontSize = fontSize,
+                        fontFamily = fontFamily,
+                        letterSpacing = 0.sp,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                visibleLines.forEachIndexed { index, line ->
+                    val lineColor = visibleLineColors.getOrNull(index) ?: LineColorType.NORMAL
 
                     // Determine text color based on focus state and line content
                     val textColor = when {
@@ -1258,7 +1311,104 @@ private fun SessionPickerOverlay(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "↑↓ Navigate  TAP Select  2×TAP Cancel",
+                text = "↑↓ Navigate  TAP Select  HOLD Kill  2×TAP Cancel",
+                color = HudColors.dimText,
+                fontSize = 10.sp,
+                fontFamily = fontFamily
+            )
+        }
+    }
+}
+
+/**
+ * Kill session confirmation dialog
+ */
+@Composable
+private fun KillSessionConfirmDialog(
+    sessionName: String,
+    selectedOption: Int,  // 0 = Cancel, 1 = Kill
+    fontFamily: FontFamily,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.95f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(24.dp)
+        ) {
+            Text(
+                text = "KILL SESSION?",
+                color = HudColors.error,
+                fontSize = 16.sp,
+                fontFamily = fontFamily,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = sessionName,
+                color = HudColors.primaryText,
+                fontSize = 14.sp,
+                fontFamily = fontFamily
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Options row
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(48.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Cancel option
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (selectedOption == 0) "▶" else "  ",
+                        color = HudColors.green,
+                        fontSize = 14.sp,
+                        fontFamily = fontFamily
+                    )
+                    Text(
+                        text = "Cancel",
+                        color = if (selectedOption == 0) HudColors.green else HudColors.dimText,
+                        fontSize = 14.sp,
+                        fontFamily = fontFamily,
+                        fontWeight = if (selectedOption == 0) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+
+                // Kill option
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (selectedOption == 1) "▶" else "  ",
+                        color = HudColors.error,
+                        fontSize = 14.sp,
+                        fontFamily = fontFamily
+                    )
+                    Text(
+                        text = "Kill",
+                        color = if (selectedOption == 1) HudColors.error else HudColors.dimText,
+                        fontSize = 14.sp,
+                        fontFamily = fontFamily,
+                        fontWeight = if (selectedOption == 1) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "←→ Select  TAP Confirm",
                 color = HudColors.dimText,
                 fontSize = 10.sp,
                 fontFamily = fontFamily

@@ -111,13 +111,25 @@ class DebugPhoneClient {
             output.write(request.toByteArray())
             output.flush()
 
-            // Read response
+            // Read response byte-by-byte to avoid buffering WebSocket data
+            // HTTP headers end with \r\n\r\n
             val responseBuilder = StringBuilder()
-            val reader = input.bufferedReader()
-            var line = reader.readLine()
-            while (line != null && line.isNotEmpty()) {
-                responseBuilder.append(line).append("\n")
-                line = reader.readLine()
+            var prevByte = 0
+            var crlfCount = 0
+            while (true) {
+                val b = input.read()
+                if (b == -1) break
+                responseBuilder.append(b.toChar())
+
+                // Check for end of headers (\r\n\r\n)
+                // \r = 13, \n = 10
+                if (b == 10 && prevByte == 13) {
+                    crlfCount++
+                    if (crlfCount >= 2) break  // Found \r\n\r\n
+                } else if (b != 13) {
+                    crlfCount = 0
+                }
+                prevByte = b
             }
 
             val response = responseBuilder.toString()
@@ -150,7 +162,7 @@ class DebugPhoneClient {
                         onMessageFromPhone?.invoke(message)
                     }
                 } else {
-                    // Connection closed
+                    // Connection closed or error
                     break
                 }
             }
@@ -176,12 +188,25 @@ class DebugPhoneClient {
             var payloadLength = (secondByte and 0x7F).toLong()
 
             if (payloadLength == 126L) {
-                payloadLength = ((input.read() shl 8) or input.read()).toLong()
+                // 2-byte extended length
+                val b1 = input.read()
+                val b2 = input.read()
+                if (b1 == -1 || b2 == -1) return null
+                payloadLength = ((b1 shl 8) or b2).toLong()
             } else if (payloadLength == 127L) {
+                // 8-byte extended length
                 payloadLength = 0
                 for (i in 0..7) {
-                    payloadLength = (payloadLength shl 8) or input.read().toLong()
+                    val b = input.read()
+                    if (b == -1) return null
+                    payloadLength = (payloadLength shl 8) or b.toLong()
                 }
+            }
+
+            // Sanity check payload length (max 10MB)
+            if (payloadLength < 0 || payloadLength > 10 * 1024 * 1024) {
+                Log.e(TAG, "Invalid payload length: $payloadLength (firstByte=0x${firstByte.toString(16)}, secondByte=0x${secondByte.toString(16)})")
+                return null
             }
 
             val mask = if (isMasked) {
@@ -259,8 +284,11 @@ class DebugPhoneClient {
             }
             else -> {
                 frame[1] = (0x80 or 127).toByte()
+                // IMPORTANT: Convert to Long before shifting, otherwise Int shift wraps at 32 bits
+                // causing the 32-bit value to be duplicated in both halves of the 64-bit field
+                val len = payload.size.toLong()
                 for (i in 0..7) {
-                    frame[2 + i] = (payload.size shr (56 - i * 8)).toByte()
+                    frame[2 + i] = (len shr (56 - i * 8)).toByte()
                 }
                 offset = 10
             }
