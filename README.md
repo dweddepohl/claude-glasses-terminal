@@ -2,14 +2,33 @@
 
 A terminal interface for Claude Code on Rokid Glasses. View and interact with Claude Code through your AR glasses using voice commands and gestures.
 
-## Screenshots
+## See Claude Code While You Work
+
+Imagine reviewing code changes while standing at a whiteboard, or dictating a database query while your hands are busy. Claude Glasses puts a terminal in your field of view, controlled entirely by voice and gestures.
+
+### Manage Multiple Sessions
 
 <p align="center">
-  <img src="docs/images/glasses-hud.png" width="400" alt="Glasses HUD Display">
-  <img src="docs/images/phone-app.png" width="200" alt="Phone App">
+  <img src="docs/images/Screenshot_20260111_154026.png" width="320" alt="Session selector showing multiple Claude Code sessions">
 </p>
 
-*Left: HUD view on glasses (emulator) | Right: Phone companion app*
+Switch between different Claude Code sessions on the fly. Each project gets its own persistent session - navigate between them with swipes, select with a tap.
+
+### Voice-First Input
+
+<p align="center">
+  <img src="docs/images/Screenshot_20260111_154323.png" width="320" alt="Voice input showing natural language command">
+</p>
+
+No keyboard needed. Hold the touchpad and speak naturally: *"Connect to our database and find out how many transactions we did today"*. Your voice becomes the prompt.
+
+### Review Code Hands-Free
+
+<p align="center">
+  <img src="docs/images/Screenshot_20260111_154114.png" width="320" alt="Code diff view showing Claude's changes">
+</p>
+
+Scroll through diffs, read Claude's explanations, and navigate the terminal - all with simple gestures on the temple touchpad. The monochrome green display blends into your environment while keeping the code visible.
 
 ## Architecture
 
