@@ -32,7 +32,7 @@ Scroll through diffs, read Claude's explanations, and navigate the terminal - al
 
 ### Bootstrapped
 
-Wonder if you can really build something with just gestures and voice? This project is the answer. The screenshots above are from live development sessions where Claude Glasses was used to build Claude Glasses - reviewing diffs, dictating prompts, and navigating code all through the AR interface.
+Wonder if you can really build something with just gestures and voice? This project is the answer. Claude Glasses was used to build Claude Glasses!
 
 ## Architecture
 
