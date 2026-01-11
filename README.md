@@ -2,6 +2,8 @@
 
 A terminal interface for Claude Code on Rokid Glasses. View and interact with Claude Code through your AR glasses using voice commands and gestures.
 
+NOTE: This is an emulated prototype and has not been tested on the actual glasses yet.
+
 ## See Claude Code While You Work
 
 Imagine reviewing code changes while standing at a whiteboard, or dictating a database query while your hands are busy. Claude Glasses puts a terminal in your field of view, controlled entirely by voice and gestures.
