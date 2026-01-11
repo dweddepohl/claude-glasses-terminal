@@ -131,11 +131,21 @@ class ClaudeTerminalServer {
       ws.on('close', () => {
         console.log('Client disconnected');
         this.clients.delete(ws);
+
+        // Release session size constraint when no clients are connected
+        if (this.clients.size === 0) {
+          this.releaseSessionSize(this.sessionName);
+        }
       });
 
       ws.on('error', (err) => {
         console.error('WebSocket error:', err);
         this.clients.delete(ws);
+
+        // Release session size constraint when no clients are connected
+        if (this.clients.size === 0) {
+          this.releaseSessionSize(this.sessionName);
+        }
       });
     });
 
@@ -189,6 +199,20 @@ class ClaudeTerminalServer {
     }
   }
 
+  /**
+   * Release the forced window size on a session, allowing it to resize naturally
+   * when used from a regular terminal
+   */
+  releaseSessionSize(name) {
+    if (!this.sessionExists(name)) return;
+    try {
+      execSync(`tmux set-option -t ${name} -u window-size`);
+      console.log(`Released size constraint on session '${name}'`);
+    } catch (e) {
+      console.warn(`Could not release size on session '${name}':`, e.message);
+    }
+  }
+
   listSessions() {
     try {
       const output = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' });
@@ -204,6 +228,12 @@ class ClaudeTerminalServer {
     if (this.pollInterval) {
       clearInterval(this.pollInterval);
       this.pollInterval = null;
+    }
+
+    // Release size constraint on the old session
+    const oldSession = this.sessionName;
+    if (oldSession !== name) {
+      this.releaseSessionSize(oldSession);
     }
 
     this.sessionName = name;
