@@ -231,6 +231,15 @@ class TerminalClient {
         Log.d(TAG, "Switching to session: $sessionName")
     }
 
+    /**
+     * Kill a tmux session
+     */
+    fun killSession(sessionName: String) {
+        val message = """{"type":"kill_session","session":"$sessionName"}"""
+        webSocket?.send(message)
+        Log.d(TAG, "Killing session: $sessionName")
+    }
+
     fun scrollUp(lines: Int = 10) {
         _scrollPosition.value = maxOf(0, _scrollPosition.value - lines)
     }

@@ -4,10 +4,6 @@ import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
@@ -28,7 +24,6 @@ class DebugGlassesServer(private val port: Int = 8081) {
 
     private var serverSocket: ServerSocket? = null
     private var clientSocket: Socket? = null
-    private var writer: PrintWriter? = null
     private var scope: CoroutineScope? = null
 
     private val _isRunning = MutableStateFlow(false)
@@ -81,11 +76,11 @@ class DebugGlassesServer(private val port: Int = 8081) {
         Log.i(TAG, "Glasses client connected from ${socket.inetAddress}")
 
         try {
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-            writer = PrintWriter(socket.getOutputStream(), true)
+            val input = socket.getInputStream()
+            val output = socket.getOutputStream()
 
-            // Perform WebSocket handshake
-            if (!performHandshake(reader, writer!!)) {
+            // Perform WebSocket handshake (using raw streams to avoid buffering issues)
+            if (!performHandshake(input, output)) {
                 Log.e(TAG, "WebSocket handshake failed")
                 socket.close()
                 return
@@ -98,7 +93,7 @@ class DebugGlassesServer(private val port: Int = 8081) {
 
             // Read messages
             while (socket.isConnected && _isRunning.value) {
-                val message = readWebSocketFrame(socket.getInputStream())
+                val message = readWebSocketFrame(input)
                 if (message != null) {
                     Log.d(TAG, "Received from glasses: ${message.take(100)}")
                     withContext(Dispatchers.Main) {
@@ -117,34 +112,48 @@ class DebugGlassesServer(private val port: Int = 8081) {
                 onGlassesDisconnected?.invoke()
             }
             clientSocket = null
-            writer = null
             Log.i(TAG, "Glasses client disconnected")
         }
     }
 
-    private fun performHandshake(reader: BufferedReader, writer: PrintWriter): Boolean {
-        // Read HTTP request
-        val requestLines = mutableListOf<String>()
-        var line = reader.readLine()
-        while (line != null && line.isNotEmpty()) {
-            requestLines.add(line)
-            line = reader.readLine()
+    private fun performHandshake(input: java.io.InputStream, output: java.io.OutputStream): Boolean {
+        // Read HTTP request byte-by-byte to avoid buffering WebSocket data
+        val requestBuilder = StringBuilder()
+        var prevByte = 0
+        var crlfCount = 0
+        while (true) {
+            val b = input.read()
+            if (b == -1) return false
+            requestBuilder.append(b.toChar())
+
+            // Check for end of headers (\r\n\r\n)
+            if (b == 10 && prevByte == 13) {
+                crlfCount++
+                if (crlfCount >= 2) break
+            } else if (b != 13) {
+                crlfCount = 0
+            }
+            prevByte = b
         }
 
+        val request = requestBuilder.toString()
+        Log.d(TAG, "Handshake request: ${request.take(200)}")
+
         // Find WebSocket key
-        val keyLine = requestLines.find { it.startsWith("Sec-WebSocket-Key:", ignoreCase = true) }
+        val keyLine = request.lines().find { it.startsWith("Sec-WebSocket-Key:", ignoreCase = true) }
         val key = keyLine?.substringAfter(":")?.trim() ?: return false
 
         // Generate accept key
         val acceptKey = generateAcceptKey(key)
 
-        // Send handshake response
-        writer.print("HTTP/1.1 101 Switching Protocols\r\n")
-        writer.print("Upgrade: websocket\r\n")
-        writer.print("Connection: Upgrade\r\n")
-        writer.print("Sec-WebSocket-Accept: $acceptKey\r\n")
-        writer.print("\r\n")
-        writer.flush()
+        // Send handshake response using raw bytes
+        val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Accept: $acceptKey\r\n" +
+                "\r\n"
+        output.write(response.toByteArray(Charsets.UTF_8))
+        output.flush()
 
         Log.d(TAG, "WebSocket handshake completed")
         return true
@@ -207,7 +216,6 @@ class DebugGlassesServer(private val port: Int = 8081) {
     }
 
     fun sendToGlasses(message: String): Boolean {
-        val currentWriter = writer ?: return false
         val currentSocket = clientSocket ?: return false
 
         // Run on IO thread to avoid NetworkOnMainThreadException
@@ -252,8 +260,11 @@ class DebugGlassesServer(private val port: Int = 8081) {
             }
             else -> {
                 frame[1] = 127
+                // IMPORTANT: Convert to Long before shifting, otherwise Int shift wraps at 32 bits
+                // causing the 32-bit value to be duplicated in both halves of the 64-bit field
+                val len = payload.size.toLong()
                 for (i in 0..7) {
-                    frame[2 + i] = (payload.size shr (56 - i * 8)).toByte()
+                    frame[2 + i] = (len shr (56 - i * 8)).toByte()
                 }
                 offset = 10
             }
@@ -277,7 +288,6 @@ class DebugGlassesServer(private val port: Int = 8081) {
 
         clientSocket = null
         serverSocket = null
-        writer = null
         _isClientConnected.value = false
 
         Log.i(TAG, "Debug glasses server stopped")

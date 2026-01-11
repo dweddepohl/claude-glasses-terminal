@@ -335,6 +335,12 @@ class HudActivity : ComponentActivity() {
 
         Log.d(GlassesApp.TAG, "Gesture: $gesture, Level: ${focus.level}, Area: ${focus.focusedArea}")
 
+        // If kill confirmation dialog is open, handle gestures for it
+        if (current.showKillConfirmation) {
+            handleKillConfirmGesture(gesture)
+            return
+        }
+
         // If session picker is open, handle gestures for it
         if (current.showSessionPicker) {
             handleSessionPickerGesture(gesture)
@@ -393,9 +399,75 @@ class HudActivity : ComponentActivity() {
                 terminalState.value = current.copy(showSessionPicker = false)
             }
             Gesture.LONG_PRESS -> {
+                // Show kill confirmation for existing sessions (not for "New Session" option)
+                val selectedIndex = current.selectedSessionIndex
+                if (selectedIndex < sessions.size) {
+                    val sessionToKill = sessions[selectedIndex]
+                    Log.d(GlassesApp.TAG, "Long press on session: $sessionToKill - showing kill confirmation")
+                    terminalState.value = current.copy(
+                        showSessionPicker = false,
+                        showKillConfirmation = true,
+                        sessionToKill = sessionToKill,
+                        killConfirmSelected = 0  // Default to Cancel
+                    )
+                }
+            }
+        }
+    }
+
+    private fun handleKillConfirmGesture(gesture: Gesture) {
+        val current = terminalState.value
+
+        when (gesture) {
+            Gesture.SWIPE_FORWARD, Gesture.SWIPE_BACKWARD -> {
+                // Toggle between Cancel (0) and Kill (1)
+                val newSelection = if (current.killConfirmSelected == 0) 1 else 0
+                terminalState.value = current.copy(killConfirmSelected = newSelection)
+            }
+            Gesture.TAP -> {
+                // Confirm the selected action
+                if (current.killConfirmSelected == 1) {
+                    // Kill the session
+                    Log.d(GlassesApp.TAG, "Killing session: ${current.sessionToKill}")
+                    killSession(current.sessionToKill)
+                } else {
+                    // Cancel - go back to session picker
+                    Log.d(GlassesApp.TAG, "Kill cancelled, returning to session picker")
+                }
+                // Close confirmation and refresh session list
+                terminalState.value = current.copy(
+                    showKillConfirmation = false,
+                    sessionToKill = "",
+                    killConfirmSelected = 0
+                )
+                // Refresh session list after a brief delay to allow kill to complete
+                if (current.killConfirmSelected == 1) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        requestSessionList()
+                    }, 200)
+                } else {
+                    requestSessionList()
+                }
+            }
+            Gesture.DOUBLE_TAP -> {
+                // Cancel and go back to session picker
+                Log.d(GlassesApp.TAG, "Kill confirmation cancelled via double tap")
+                terminalState.value = current.copy(
+                    showKillConfirmation = false,
+                    sessionToKill = "",
+                    killConfirmSelected = 0
+                )
+                requestSessionList()
+            }
+            Gesture.LONG_PRESS -> {
                 // Ignore
             }
         }
+    }
+
+    private fun killSession(sessionName: String) {
+        Log.d(GlassesApp.TAG, "Sending kill_session request for: $sessionName")
+        phoneConnection.sendToPhone("""{"type":"kill_session","session":"$sessionName"}""")
     }
 
     private fun generateNewSessionName(existingSessions: List<String>): String {
@@ -490,10 +562,10 @@ class HudActivity : ComponentActivity() {
      */
     private fun scrollDownOrPushThrough() {
         val current = terminalState.value
-        // Use same max as scrollToBottom (lines.size - 1)
-        val maxScroll = maxOf(0, current.lines.size - 1)
+        // Use contentLines size (not lines) since that's what the content area displays
+        val maxScroll = maxOf(0, current.contentLines.size - 1)
 
-        Log.d(GlassesApp.TAG, "scrollDownOrPushThrough: pos=${current.scrollPosition}, max=$maxScroll, lines=${current.lines.size}")
+        Log.d(GlassesApp.TAG, "scrollDownOrPushThrough: pos=${current.scrollPosition}, max=$maxScroll, contentLines=${current.contentLines.size}")
 
         if (current.scrollPosition >= maxScroll) {
             // Already at bottom - push through to Input area at level 0
@@ -657,8 +729,9 @@ class HudActivity : ComponentActivity() {
 
     private fun scrollToBottom() {
         val current = terminalState.value
-        val lastIndex = maxOf(0, current.lines.size - 1)
-        Log.d(GlassesApp.TAG, "scrollToBottom: scrollingTo=$lastIndex")
+        // Use contentLines (what's displayed) not lines (includes input section)
+        val lastIndex = maxOf(0, current.contentLines.size - 1)
+        Log.d(GlassesApp.TAG, "scrollToBottom: scrollingTo=$lastIndex, contentLines=${current.contentLines.size}")
         terminalState.value = current.copy(
             scrollPosition = lastIndex,
             scrollTrigger = current.scrollTrigger + 1
@@ -673,8 +746,8 @@ class HudActivity : ComponentActivity() {
 
     private fun scrollDown() {
         val current = terminalState.value
-        // Use same max as scrollToBottom (lines.size - 1) for consistency
-        val maxScroll = maxOf(0, current.lines.size - 1)
+        // Use contentLines size (what's displayed in content area)
+        val maxScroll = maxOf(0, current.contentLines.size - 1)
         val newPosition = minOf(maxScroll, current.scrollPosition + current.visibleLines)
         terminalState.value = current.copy(scrollPosition = newPosition)
     }
@@ -804,6 +877,9 @@ class HudActivity : ComponentActivity() {
      * Detect the input section from terminal lines.
      * The input section starts after a horizontal line and contains the ❯ prompt.
      * Everything after a second horizontal line goes to the status area.
+     *
+     * When no ❯ is visible (input is taller than screen), assume the entire
+     * visible area is the input section until we can see a ❯ again.
      */
     private fun detectInputSection(lines: List<String>, lineColors: List<LineColorType>): InputSection {
         if (lines.isEmpty()) return InputSection()
@@ -813,10 +889,21 @@ class HudActivity : ComponentActivity() {
             line.trimStart().startsWith("❯") || line.contains("❯")
         }
 
-        if (promptLineIndex == -1) return InputSection()
+        // If no prompt is visible, assume the entire screen is input content
+        // This happens when the input is taller than the visible screen area
+        if (promptLineIndex == -1) {
+            Log.d(GlassesApp.TAG, "No ❯ visible - assuming entire screen is input")
+            return InputSection(
+                lines = lines.toList(),
+                lineColors = lineColors.toList(),
+                statusLine = null,
+                claudeMode = ClaudeMode.NORMAL,
+                startIndex = 0  // Entire screen is input
+            )
+        }
 
-        // Horizontal line characters
-        val horizontalLineChars = setOf('━', '─', '═', '▀', '▄', '█', '―', '⎯')
+        // Horizontal line characters (including dashed variants)
+        val horizontalLineChars = setOf('━', '─', '═', '▀', '▄', '█', '―', '⎯', '╌', '╍', '┄', '┅', '┈', '┉')
 
         fun isHorizontalLine(line: String): Boolean {
             val trimmed = line.trim()
