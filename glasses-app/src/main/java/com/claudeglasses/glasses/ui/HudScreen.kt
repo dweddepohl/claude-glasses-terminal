@@ -87,10 +87,10 @@ enum class ContentMode {
  */
 enum class QuickCommand(val icon: String, val label: String, val key: String) {
     ESCAPE("✕", "ESC", "escape"),
+    CLEAR("⌫", "CLEAR", "ctrl_u"),
     ENTER("↵", "ENTER", "enter"),
     SHIFT_TAB("⇤", "S-TAB", "shift_tab"),
     TAB("⇥", "TAB", "tab"),
-    CLEAR("⌫", "CLEAR", "ctrl_u"),
     SESSION("◎", "SESSION", "list_sessions")
 }
 
@@ -120,6 +120,15 @@ sealed class DetectedPrompt {
 }
 
 /**
+ * Claude Code interaction modes detected from status line
+ */
+enum class ClaudeMode {
+    NORMAL,      // Regular mode
+    ACCEPT_EDITS, // "accept edits on" - reviewing changes
+    PLAN         // "plan mode on" - planning mode
+}
+
+/**
  * Detected input section from terminal lines.
  * The input section is identified by a horizontal line followed by the ❯ prompt.
  */
@@ -127,6 +136,7 @@ data class InputSection(
     val lines: List<String> = emptyList(),           // Input lines (prompt area, excludes status)
     val lineColors: List<LineColorType> = emptyList(),
     val statusLine: String? = null,                   // Status line shown below input (tmux info)
+    val claudeMode: ClaudeMode = ClaudeMode.NORMAL,  // Detected Claude Code mode
     val startIndex: Int = -1  // Index in terminal lines where input section starts (after horizontal line)
 ) {
     val isEmpty: Boolean get() = lines.isEmpty()
@@ -424,6 +434,7 @@ fun HudScreen(
                     CommandBar(
                         commands = QuickCommand.values().toList(),
                         selectedIndex = state.focus.commandIndex,
+                        claudeMode = state.inputSection.claudeMode,
                         displaySize = state.displaySize,
                         fontFamily = monoFontFamily,
                         alpha = commandAlpha,
@@ -771,6 +782,7 @@ private fun InputArea(
 private fun CommandBar(
     commands: List<QuickCommand>,
     selectedIndex: Int,
+    claudeMode: ClaudeMode,
     displaySize: HudDisplaySize,
     fontFamily: FontFamily,
     alpha: Float,
@@ -779,6 +791,13 @@ private fun CommandBar(
 ) {
     val commandFontSize = (displaySize.fontSizeSp - 2).coerceAtLeast(8).sp
     val scrollState = rememberScrollState()
+
+    // Mode indicator icon
+    val modeIcon = when (claudeMode) {
+        ClaudeMode.ACCEPT_EDITS -> "⏩"  // Fast forward for accept edits
+        ClaudeMode.PLAN -> "🤔"          // Thinking for plan mode
+        ClaudeMode.NORMAL -> null
+    }
 
     Row(
         modifier = modifier
@@ -820,6 +839,13 @@ private fun CommandBar(
                         fontFamily = fontFamily,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                     )
+                    // Show mode icon after SHIFT-TAB
+                    if (command == QuickCommand.SHIFT_TAB && modeIcon != null) {
+                        Text(
+                            text = modeIcon,
+                            fontSize = (commandFontSize.value + 2).sp
+                        )
+                    }
                 }
             }
         }

@@ -23,6 +23,7 @@ import com.claudeglasses.glasses.ui.ContentMode
 import com.claudeglasses.glasses.ui.DetectedPrompt
 import com.claudeglasses.glasses.ui.FocusArea
 import com.claudeglasses.glasses.ui.FocusLevel
+import com.claudeglasses.glasses.ui.ClaudeMode
 import com.claudeglasses.glasses.ui.FocusState
 import com.claudeglasses.glasses.ui.HudScreen
 import com.claudeglasses.glasses.ui.InputSection
@@ -910,10 +911,19 @@ class HudActivity : ComponentActivity() {
             null
         }
 
+        // Detect Claude mode from status lines
+        val allStatusText = statusLines.joinToString(" ").lowercase()
+        val claudeMode = when {
+            allStatusText.contains("accept edits on") -> ClaudeMode.ACCEPT_EDITS
+            allStatusText.contains("plan mode on") -> ClaudeMode.PLAN
+            else -> ClaudeMode.NORMAL
+        }
+
         return InputSection(
             lines = inputLines,
             lineColors = inputColors,
             statusLine = statusLine,
+            claudeMode = claudeMode,
             startIndex = inputSectionStart
         )
     }
