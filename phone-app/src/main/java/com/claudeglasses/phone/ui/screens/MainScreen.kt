@@ -370,9 +370,7 @@ fun MainScreen() {
                 }
             },
             installState = installState,
-            onInstallGlassesApp = {
-                apkInstaller.installGlassesApp()
-            },
+            apkInstaller = apkInstaller,
             onCancelInstall = {
                 apkInstaller.cancelInstallation()
             },
@@ -533,10 +531,14 @@ fun SettingsDialog(
     onDebugModeChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     installState: ApkInstaller.InstallState,
-    onInstallGlassesApp: () -> Unit,
+    apkInstaller: ApkInstaller,
     onCancelInstall: () -> Unit,
     onOpenGlassesApp: () -> Unit
 ) {
+    var glassesIp by remember { mutableStateOf("") }
+    var connectionTestResult by remember { mutableStateOf<String?>(null) }
+    var isTestingConnection by remember { mutableStateOf(false) }
+
     AlertDialog(
         onDismissRequest = {
             // Don't allow dismissing while installing
@@ -548,54 +550,164 @@ fun SettingsDialog(
         },
         title = { Text("Settings") },
         text = {
-            Column {
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = onServerUrlChange,
-                    label = { Text("Server URL") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(16.dp))
+            LazyColumn {
+                item {
+                    OutlinedTextField(
+                        value = serverUrl,
+                        onValueChange = onServerUrlChange,
+                        label = { Text("Server URL") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(16.dp))
 
-                // Debug mode toggle for emulator testing
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Debug Mode", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "Use WebSocket instead of Bluetooth for glasses",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
+                    // Debug mode toggle for emulator testing
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Debug Mode", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "Use WebSocket instead of Bluetooth for glasses",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                        }
+                        Switch(
+                            checked = debugModeEnabled,
+                            onCheckedChange = onDebugModeChange
                         )
                     }
-                    Switch(
-                        checked = debugModeEnabled,
-                        onCheckedChange = onDebugModeChange
-                    )
-                }
 
-                if (debugModeEnabled) {
-                    Spacer(Modifier.height(8.dp))
+                    if (debugModeEnabled) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Glasses app connects to port 8081.\n" +
+                            "Run: adb forward tcp:8081 tcp:8081",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+
+                    // ADB Installation Section
                     Text(
-                        "Glasses app connects to port 8081.\n" +
-                        "Run: adb forward tcp:8081 tcp:8081",
+                        "Glasses App Installation",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    // Glasses IP input
+                    OutlinedTextField(
+                        value = glassesIp,
+                        onValueChange = {
+                            glassesIp = it
+                            connectionTestResult = null
+                        },
+                        label = { Text("Glasses IP Address") },
+                        placeholder = { Text("e.g., 192.168.1.100") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        trailingIcon = {
+                            if (isTestingConnection) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                        }
+                    )
+
+                    // Connection test result
+                    connectionTestResult?.let { result ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            result,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (result.startsWith("Connected")) Color(0xFF4CAF50) else Color(0xFFF44336)
+                        )
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // Test Connection button
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                if (glassesIp.isNotBlank()) {
+                                    isTestingConnection = true
+                                    connectionTestResult = null
+                                    apkInstaller.testAdbConnection(glassesIp.trim()) { success, message ->
+                                        isTestingConnection = false
+                                        connectionTestResult = message
+                                        if (success) {
+                                            apkInstaller.configureAdb(glassesIp.trim())
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = glassesIp.isNotBlank() && !isTestingConnection,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Test")
+                        }
+
+                        Button(
+                            onClick = {
+                                if (glassesIp.isNotBlank()) {
+                                    apkInstaller.configureAdb(glassesIp.trim())
+                                    apkInstaller.installViaAdb()
+                                } else {
+                                    apkInstaller.installGlassesApp()
+                                }
+                            },
+                            enabled = installState is ApkInstaller.InstallState.Idle ||
+                                     installState is ApkInstaller.InstallState.Error ||
+                                     installState is ApkInstaller.InstallState.Success,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Install")
+                        }
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Enable ADB debugging on glasses and connect to same WiFi",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = Color.Gray
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    // Installation status
+                    InstallationSection(
+                        installState = installState,
+                        onCancel = onCancelInstall,
+                        onOpenApp = {
+                            if (glassesIp.isNotBlank()) {
+                                apkInstaller.configureAdb(glassesIp.trim())
+                            }
+                            onOpenGlassesApp()
+                        },
+                        onRetry = {
+                            if (glassesIp.isNotBlank()) {
+                                apkInstaller.configureAdb(glassesIp.trim())
+                                apkInstaller.installViaAdb()
+                            } else {
+                                apkInstaller.installGlassesApp()
+                            }
+                        }
                     )
                 }
-
-                Spacer(Modifier.height(16.dp))
-
-                // Installation section
-                InstallationSection(
-                    installState = installState,
-                    onInstall = onInstallGlassesApp,
-                    onCancel = onCancelInstall,
-                    onOpenApp = onOpenGlassesApp
-                )
             }
         },
         confirmButton = {
@@ -614,37 +726,18 @@ fun SettingsDialog(
 @Composable
 private fun InstallationSection(
     installState: ApkInstaller.InstallState,
-    onInstall: () -> Unit,
     onCancel: () -> Unit,
-    onOpenApp: () -> Unit
+    onOpenApp: () -> Unit,
+    onRetry: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            "Glasses App Installation",
-            style = MaterialTheme.typography.titleSmall
-        )
-        Spacer(Modifier.height(8.dp))
-
         when (installState) {
             is ApkInstaller.InstallState.Idle -> {
-                Text(
-                    "Install the glasses app on your connected Rokid glasses.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = onInstall,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.CloudUpload, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Install App on Glasses")
-                }
+                // Nothing to show - install button is above
             }
 
             is ApkInstaller.InstallState.CheckingConnection -> {
-                InstallProgressRow("Checking connection...")
+                InstallProgressRow("Connecting to glasses...")
             }
 
             is ApkInstaller.InstallState.InitializingWifiP2P -> {
@@ -657,6 +750,14 @@ private fun InstallationSection(
 
             is ApkInstaller.InstallState.Uploading -> {
                 InstallProgressRow(installState.message)
+                if (installState.progress >= 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${installState.progress}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
                     onClick = onCancel,
@@ -707,7 +808,7 @@ private fun InstallationSection(
 
             is ApkInstaller.InstallState.Error -> {
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Top,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(
@@ -719,18 +820,20 @@ private fun InstallationSection(
                     Spacer(Modifier.width(8.dp))
                     Text(
                         installState.message,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFFF44336)
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = onInstall,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Try Again")
+                if (installState.canRetry) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onRetry,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Try Again")
+                    }
                 }
             }
         }
