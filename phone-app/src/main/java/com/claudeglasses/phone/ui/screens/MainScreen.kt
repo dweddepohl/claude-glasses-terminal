@@ -376,7 +376,10 @@ fun MainScreen() {
             },
             onOpenGlassesApp = {
                 apkInstaller.openGlassesApp()
-            }
+            },
+            // Pass glasses manager for device scanning/connection
+            glassesManager = glassesManager,
+            glassesState = glassesState
         )
     }
 }
@@ -533,11 +536,22 @@ fun SettingsDialog(
     installState: ApkInstaller.InstallState,
     apkInstaller: ApkInstaller,
     onCancelInstall: () -> Unit,
-    onOpenGlassesApp: () -> Unit
+    onOpenGlassesApp: () -> Unit,
+    // New params for device connection
+    glassesManager: GlassesConnectionManager? = null,
+    glassesState: GlassesConnectionManager.ConnectionState? = null
 ) {
     var glassesIp by remember { mutableStateOf("") }
     var connectionTestResult by remember { mutableStateOf<String?>(null) }
     var isTestingConnection by remember { mutableStateOf(false) }
+    var showDeviceList by remember { mutableStateOf(false) }
+
+    // Collect discovered devices if manager is provided
+    val discoveredDevices = glassesManager?.discoveredDevices?.collectAsState()?.value ?: emptyList()
+    val wifiP2PConnected = glassesManager?.wifiP2PConnected?.collectAsState()?.value ?: false
+
+    // Determine if SDK installation is available
+    val sdkConnected = glassesState is GlassesConnectionManager.ConnectionState.Connected && !debugModeEnabled
 
     AlertDialog(
         onDismissRequest = {
@@ -545,6 +559,7 @@ fun SettingsDialog(
             if (installState is ApkInstaller.InstallState.Idle ||
                 installState is ApkInstaller.InstallState.Success ||
                 installState is ApkInstaller.InstallState.Error) {
+                glassesManager?.stopScanning()
                 onDismiss()
             }
         },
@@ -592,21 +607,211 @@ fun SettingsDialog(
 
                     Spacer(Modifier.height(24.dp))
 
-                    // ADB Installation Section
+                    // ============== Glasses Connection Section ==============
+                    if (!debugModeEnabled) {
+                        Text(
+                            "Glasses Connection",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        // Connection status
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                when (glassesState) {
+                                    is GlassesConnectionManager.ConnectionState.Connected -> Icons.Default.CheckCircle
+                                    is GlassesConnectionManager.ConnectionState.Connecting,
+                                    is GlassesConnectionManager.ConnectionState.Scanning,
+                                    is GlassesConnectionManager.ConnectionState.InitializingWifiP2P -> Icons.Default.Sync
+                                    is GlassesConnectionManager.ConnectionState.Error -> Icons.Default.Error
+                                    else -> Icons.Default.BluetoothDisabled
+                                },
+                                contentDescription = null,
+                                tint = when (glassesState) {
+                                    is GlassesConnectionManager.ConnectionState.Connected -> Color(0xFF4CAF50)
+                                    is GlassesConnectionManager.ConnectionState.Connecting,
+                                    is GlassesConnectionManager.ConnectionState.Scanning,
+                                    is GlassesConnectionManager.ConnectionState.InitializingWifiP2P -> Color(0xFFFFC107)
+                                    is GlassesConnectionManager.ConnectionState.Error -> Color(0xFFF44336)
+                                    else -> Color.Gray
+                                },
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                when (glassesState) {
+                                    is GlassesConnectionManager.ConnectionState.Connected ->
+                                        "Connected: ${glassesState.deviceName}"
+                                    is GlassesConnectionManager.ConnectionState.Connecting -> "Connecting..."
+                                    is GlassesConnectionManager.ConnectionState.Scanning -> "Scanning for glasses..."
+                                    is GlassesConnectionManager.ConnectionState.InitializingWifiP2P -> "Setting up WiFi P2P..."
+                                    is GlassesConnectionManager.ConnectionState.Error -> "Error: ${glassesState.message}"
+                                    else -> "Not connected"
+                                },
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+
+                        // WiFi P2P status (if Bluetooth connected)
+                        if (glassesState is GlassesConnectionManager.ConnectionState.Connected) {
+                            Spacer(Modifier.height(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    if (wifiP2PConnected) Icons.Default.WifiTethering else Icons.Default.WifiTetheringOff,
+                                    contentDescription = null,
+                                    tint = if (wifiP2PConnected) Color(0xFF4CAF50) else Color.Gray,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    if (wifiP2PConnected) "WiFi P2P: Connected" else "WiFi P2P: Not connected",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (wifiP2PConnected) Color(0xFF4CAF50) else Color.Gray
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+
+                        // Scan / Connect buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val isScanning = glassesState is GlassesConnectionManager.ConnectionState.Scanning
+
+                            OutlinedButton(
+                                onClick = {
+                                    if (isScanning) {
+                                        glassesManager?.stopScanning()
+                                    } else {
+                                        glassesManager?.startScanning()
+                                        showDeviceList = true
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    if (isScanning) Icons.Default.Stop else Icons.Default.BluetoothSearching,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (isScanning) "Stop" else "Scan")
+                            }
+
+                            if (glassesState is GlassesConnectionManager.ConnectionState.Connected) {
+                                // Init WiFi P2P button
+                                if (!wifiP2PConnected) {
+                                    Button(
+                                        onClick = { glassesManager?.initWifiP2P() },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.WifiTethering, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("WiFi P2P")
+                                    }
+                                }
+
+                                OutlinedButton(
+                                    onClick = { glassesManager?.disconnect() },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.LinkOff, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Disconnect")
+                                }
+                            }
+                        }
+
+                        // Device list (when scanning or has results)
+                        if (showDeviceList && discoveredDevices.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Found ${discoveredDevices.size} device(s):",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                            Spacer(Modifier.height(4.dp))
+
+                            discoveredDevices.forEach { device ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(device.name, style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            "${device.address} (RSSI: ${device.rssi})",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            glassesManager?.connectToDevice(device)
+                                            showDeviceList = false
+                                        }
+                                    ) {
+                                        Text("Connect")
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(24.dp))
+                    }
+
+                    // ============== Installation Section ==============
                     Text(
                         "Glasses App Installation",
                         style = MaterialTheme.typography.titleSmall
                     )
                     Spacer(Modifier.height(8.dp))
 
-                    // Glasses IP input
+                    // Show SDK install option if connected via Bluetooth
+                    if (sdkConnected) {
+                        Text(
+                            "Install via Bluetooth + WiFi P2P (no ADB needed)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        Button(
+                            onClick = { apkInstaller.installViaSdk() },
+                            enabled = installState is ApkInstaller.InstallState.Idle ||
+                                     installState is ApkInstaller.InstallState.Error ||
+                                     installState is ApkInstaller.InstallState.Success,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Install via SDK")
+                        }
+
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "Or use ADB (requires WiFi on glasses):",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+
+                    // ADB Installation (fallback)
                     OutlinedTextField(
                         value = glassesIp,
                         onValueChange = {
                             glassesIp = it
                             connectionTestResult = null
                         },
-                        label = { Text("Glasses IP Address") },
+                        label = { Text("Glasses IP Address (for ADB)") },
                         placeholder = { Text("e.g., 192.168.1.100") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
@@ -668,20 +873,21 @@ fun SettingsDialog(
                                     apkInstaller.installGlassesApp()
                                 }
                             },
-                            enabled = installState is ApkInstaller.InstallState.Idle ||
+                            enabled = (installState is ApkInstaller.InstallState.Idle ||
                                      installState is ApkInstaller.InstallState.Error ||
-                                     installState is ApkInstaller.InstallState.Success,
+                                     installState is ApkInstaller.InstallState.Success) &&
+                                     glassesIp.isNotBlank(),
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Install")
+                            Text("ADB Install")
                         }
                     }
 
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Enable ADB debugging on glasses and connect to same WiFi",
+                        "ADB requires: Developer Options + USB debugging + same WiFi",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
@@ -699,7 +905,9 @@ fun SettingsDialog(
                             onOpenGlassesApp()
                         },
                         onRetry = {
-                            if (glassesIp.isNotBlank()) {
+                            if (sdkConnected) {
+                                apkInstaller.installViaSdk()
+                            } else if (glassesIp.isNotBlank()) {
                                 apkInstaller.configureAdb(glassesIp.trim())
                                 apkInstaller.installViaAdb()
                             } else {
@@ -712,7 +920,10 @@ fun SettingsDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = onDismiss,
+                onClick = {
+                    glassesManager?.stopScanning()
+                    onDismiss()
+                },
                 enabled = installState is ApkInstaller.InstallState.Idle ||
                          installState is ApkInstaller.InstallState.Success ||
                          installState is ApkInstaller.InstallState.Error

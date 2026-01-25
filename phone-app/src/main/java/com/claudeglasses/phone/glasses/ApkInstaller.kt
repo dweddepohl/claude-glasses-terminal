@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.delay
 
 /**
  * Handles APK installation on Rokid glasses.
@@ -170,11 +171,10 @@ class ApkInstaller(private val context: Context) {
     }
 
     /**
-     * Install the bundled glasses app APK using SDK method.
+     * Install the bundled glasses app APK using SDK method (WiFi P2P).
      * Requires: SDK initialized, Bluetooth connected to glasses.
      *
-     * Note: This method depends on the Rokid SDK being properly set up.
-     * For development, prefer installViaAdb() which is more reliable.
+     * The SDK will automatically establish WiFi P2P for the transfer.
      */
     fun installViaSdk() {
         if (!canStartInstall()) return
@@ -193,24 +193,117 @@ class ApkInstaller(private val context: Context) {
         if (!RokidSdkManager.isConnected()) {
             Log.e(TAG, "Not connected to glasses via Bluetooth")
             _installState.value = InstallState.Error(
-                "Not connected to glasses. Pair with glasses first via Bluetooth.",
+                "Not connected to glasses. Connect to glasses via Bluetooth first.",
                 canRetry = true
             )
             return
         }
 
-        Log.i(TAG, "Starting SDK installation")
-        _installState.value = InstallState.Error(
-            "SDK installation not yet implemented. Use ADB method instead:\n" +
-            "1. Enable ADB on glasses\n" +
-            "2. Connect glasses to WiFi\n" +
-            "3. Enter glasses IP in settings\n" +
-            "4. Tap 'Install via ADB'",
-            canRetry = false
-        )
+        Log.i(TAG, "Starting SDK installation via WiFi P2P")
+        _installState.value = InstallState.PreparingApk
 
-        // TODO: Implement SDK-based installation when SDK is fully integrated
-        // The SDK uses WiFi P2P which requires additional setup
+        installJob = scope.launch {
+            try {
+                withTimeout(OPERATION_TIMEOUT_MS) {
+                    doSdkInstall()
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(TAG, "SDK installation timed out after ${OPERATION_TIMEOUT_MS}ms")
+                _installState.value = InstallState.Error("Installation timed out. Check glasses connection.")
+            } catch (e: CancellationException) {
+                Log.d(TAG, "SDK installation cancelled")
+                _installState.value = InstallState.Idle
+            } catch (e: Exception) {
+                Log.e(TAG, "SDK installation failed", e)
+                _installState.value = InstallState.Error(formatError(e))
+            }
+        }
+    }
+
+    private suspend fun doSdkInstall() = withContext(Dispatchers.IO) {
+        // Step 1: Prepare APK
+        val apkFile = extractApkFromAssets()
+            ?: throw Exception("No APK found. Ensure glasses-app-release.apk is bundled.")
+
+        Log.d(TAG, "APK prepared: ${apkFile.absolutePath} (${apkFile.length() / 1024} KB)")
+
+        // Step 2: Set up callbacks for progress tracking
+        var uploadComplete = false
+        var installComplete = false
+        var installError: String? = null
+
+        RokidSdkManager.onApkUploadSucceed = {
+            Log.d(TAG, "SDK: APK upload succeeded")
+            uploadComplete = true
+            _installState.value = InstallState.Installing("Installing on glasses...")
+        }
+
+        RokidSdkManager.onApkUploadFailed = {
+            Log.e(TAG, "SDK: APK upload failed")
+            installError = "APK upload failed. Check WiFi P2P connection."
+        }
+
+        RokidSdkManager.onApkInstallSucceed = {
+            Log.d(TAG, "SDK: APK installation succeeded")
+            installComplete = true
+        }
+
+        RokidSdkManager.onApkInstallFailed = {
+            Log.e(TAG, "SDK: APK installation failed")
+            installError = "APK installation failed on glasses."
+        }
+
+        // Step 3: Initialize WiFi P2P if not connected
+        if (!RokidSdkManager.isWifiP2PConnected()) {
+            Log.d(TAG, "Initializing WiFi P2P for APK transfer...")
+            _installState.value = InstallState.InitializingWifiP2P
+
+            if (!RokidSdkManager.initWifiP2P()) {
+                throw Exception("Failed to initialize WiFi P2P. Ensure Bluetooth is connected.")
+            }
+
+            // Wait for WiFi P2P connection (up to 30 seconds)
+            var waitTime = 0
+            while (!RokidSdkManager.isWifiP2PConnected() && waitTime < 30000) {
+                delay(500)
+                waitTime += 500
+            }
+
+            if (!RokidSdkManager.isWifiP2PConnected()) {
+                throw Exception("WiFi P2P connection timed out. Try again.")
+            }
+        }
+
+        // Step 4: Start APK upload
+        Log.d(TAG, "Starting APK upload via SDK...")
+        _installState.value = InstallState.Uploading("Uploading ${apkFile.length() / 1024} KB via WiFi P2P...")
+
+        val started = RokidSdkManager.startUploadApk(apkFile.absolutePath)
+        if (!started) {
+            throw Exception("Failed to start APK upload. Check SDK connection.")
+        }
+
+        // Step 5: Wait for installation to complete
+        var waitTime = 0
+        while (!installComplete && installError == null && waitTime < 120000) {
+            delay(500)
+            waitTime += 500
+        }
+
+        // Cleanup temp file
+        cleanupTempApk()
+
+        // Check result
+        if (installError != null) {
+            throw Exception(installError)
+        }
+
+        if (!installComplete) {
+            throw Exception("Installation did not complete. Check glasses screen for prompts.")
+        }
+
+        Log.i(TAG, "SDK APK installation successful!")
+        _installState.value = InstallState.Success("Glasses app installed successfully via SDK!")
     }
 
     /**

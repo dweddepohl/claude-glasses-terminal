@@ -6,7 +6,9 @@ import android.util.Log
 import com.claudeglasses.phone.BuildConfig
 import com.rokid.cxr.Caps
 import com.rokid.cxr.client.extend.CxrApi
+import com.rokid.cxr.client.extend.callbacks.ApkStatusCallback
 import com.rokid.cxr.client.extend.callbacks.BluetoothStatusCallback
+import com.rokid.cxr.client.extend.callbacks.WifiP2PStatusCallback
 import com.rokid.cxr.client.extend.listeners.CustomCmdListener
 import com.rokid.cxr.client.utils.ValueUtil
 
@@ -17,6 +19,12 @@ import com.rokid.cxr.client.utils.ValueUtil
  * - ROKID_CLIENT_ID
  * - ROKID_CLIENT_SECRET
  * - ROKID_ACCESS_KEY
+ *
+ * Connection flow:
+ * 1. initialize() - Set up SDK with credentials
+ * 2. initBluetooth(device) - Establish Bluetooth control channel
+ * 3. initWifiP2P() - Establish WiFi P2P data channel (for APK uploads)
+ * 4. startUploadApk() - Upload and install APK via WiFi P2P
  */
 object RokidSdkManager {
 
@@ -26,30 +34,115 @@ object RokidSdkManager {
     private var cxrApi: CxrApi? = null
     private var appContext: Context? = null
 
+    // Connection state
+    private var isBluetoothConnectedState = false
+    private var isWifiP2PConnectedState = false
+
+    // Saved connection info for reconnection
+    private var savedMacAddress: String? = null
+    private var savedDeviceName: String? = null
+
     // Callbacks for glasses events
     var onGlassesConnected: (() -> Unit)? = null
     var onGlassesDisconnected: (() -> Unit)? = null
     var onMessageFromGlasses: ((String, Caps?) -> Unit)? = null
     var onConnectionInfo: ((name: String, mac: String, sn: String, type: Int) -> Unit)? = null
+    var onBluetoothFailed: ((String) -> Unit)? = null
+
+    // WiFi P2P callbacks
+    var onWifiP2PConnected: (() -> Unit)? = null
+    var onWifiP2PDisconnected: (() -> Unit)? = null
+    var onWifiP2PFailed: (() -> Unit)? = null
+
+    // APK installation callbacks
+    var onApkUploadSucceed: (() -> Unit)? = null
+    var onApkUploadFailed: (() -> Unit)? = null
+    var onApkInstallSucceed: (() -> Unit)? = null
+    var onApkInstallFailed: (() -> Unit)? = null
 
     private val bluetoothCallback = object : BluetoothStatusCallback {
         override fun onConnectionInfo(name: String?, mac: String?, sn: String?, deviceType: Int) {
             Log.d(TAG, "Connection info: name=$name, mac=$mac, sn=$sn, type=$deviceType")
+            // Save for reconnection
+            savedMacAddress = mac
+            savedDeviceName = name
             onConnectionInfo?.invoke(name ?: "", mac ?: "", sn ?: "", deviceType)
         }
 
         override fun onConnected() {
-            Log.d(TAG, "Connected to glasses")
+            Log.d(TAG, "Bluetooth connected to glasses")
+            isBluetoothConnectedState = true
             onGlassesConnected?.invoke()
         }
 
         override fun onDisconnected() {
-            Log.d(TAG, "Disconnected from glasses")
+            Log.d(TAG, "Bluetooth disconnected from glasses")
+            isBluetoothConnectedState = false
             onGlassesDisconnected?.invoke()
         }
 
         override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
             Log.e(TAG, "Bluetooth connection failed: $errorCode")
+            isBluetoothConnectedState = false
+            onBluetoothFailed?.invoke(errorCode?.name ?: "Unknown error")
+        }
+    }
+
+    private val wifiP2PCallback = object : WifiP2PStatusCallback {
+        override fun onConnected() {
+            Log.d(TAG, "WiFi P2P connected")
+            isWifiP2PConnectedState = true
+            onWifiP2PConnected?.invoke()
+        }
+
+        override fun onDisconnected() {
+            Log.d(TAG, "WiFi P2P disconnected")
+            isWifiP2PConnectedState = false
+            onWifiP2PDisconnected?.invoke()
+        }
+
+        override fun onFailed(errorCode: ValueUtil.CxrWifiErrorCode?) {
+            Log.e(TAG, "WiFi P2P connection failed: $errorCode")
+            isWifiP2PConnectedState = false
+            onWifiP2PFailed?.invoke()
+        }
+    }
+
+    private val apkCallback = object : ApkStatusCallback {
+        override fun onUploadApkSucceed() {
+            Log.d(TAG, "APK upload succeeded")
+            onApkUploadSucceed?.invoke()
+        }
+
+        override fun onUploadApkFailed() {
+            Log.e(TAG, "APK upload failed")
+            onApkUploadFailed?.invoke()
+        }
+
+        override fun onInstallApkSucceed() {
+            Log.d(TAG, "APK installation succeeded")
+            onApkInstallSucceed?.invoke()
+        }
+
+        override fun onInstallApkFailed() {
+            Log.e(TAG, "APK installation failed")
+            onApkInstallFailed?.invoke()
+        }
+
+        override fun onUninstallApkSucceed() {
+            Log.d(TAG, "APK uninstall succeeded")
+        }
+
+        override fun onUninstallApkFailed() {
+            Log.e(TAG, "APK uninstall failed")
+        }
+
+        override fun onOpenAppSucceed() {
+            Log.d(TAG, "App opened successfully")
+        }
+
+        override fun onOpenAppFailed() {
+            Log.e(TAG, "Failed to open app")
         }
     }
 
@@ -146,7 +239,7 @@ object RokidSdkManager {
     }
 
     /**
-     * Send a custom command/message to the glasses
+     * Send a custom command/message to the glasses via Bluetooth
      */
     fun sendToGlasses(command: String, caps: Caps = Caps()): Boolean {
         if (!isInitialized) {
@@ -154,12 +247,16 @@ object RokidSdkManager {
             return false
         }
 
+        if (!isBluetoothConnectedState) {
+            Log.e(TAG, "Not connected to glasses via Bluetooth")
+            return false
+        }
+
         return try {
-            // The sendCustomCmd might not exist - need to find the right method
-            // Using the underlying CxrController if available
-            Log.d(TAG, "Attempting to send: ${command.take(50)}...")
-            // TODO: Find the correct send method from CxrApi
-            // For now, logging - actual implementation depends on SDK discovery
+            // Send custom command via the SDK
+            caps.write(command)
+            cxrApi?.sendCustomCmd("terminal", caps)
+            Log.d(TAG, "Sent to glasses: ${command.take(50)}...")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error sending message to glasses", e)
@@ -167,19 +264,153 @@ object RokidSdkManager {
         }
     }
 
+    // ============== WiFi P2P Methods ==============
+
+    /**
+     * Initialize WiFi P2P connection for data transfer (APK uploads, etc.)
+     * Call this after Bluetooth is connected.
+     */
+    fun initWifiP2P(): Boolean {
+        if (!isInitialized) {
+            Log.e(TAG, "SDK not initialized")
+            return false
+        }
+
+        if (!isBluetoothConnectedState) {
+            Log.e(TAG, "Bluetooth not connected - connect via Bluetooth first")
+            return false
+        }
+
+        return try {
+            val status = cxrApi?.initWifiP2P(wifiP2PCallback)
+            Log.d(TAG, "WiFi P2P initialization status: $status")
+            status == ValueUtil.CxrStatus.REQUEST_SUCCEED
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing WiFi P2P", e)
+            false
+        }
+    }
+
+    /**
+     * Deinitialize WiFi P2P connection
+     */
+    fun deinitWifiP2P() {
+        try {
+            cxrApi?.deinitWifiP2P()
+            isWifiP2PConnectedState = false
+            Log.d(TAG, "WiFi P2P deinitialized")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error deinitializing WiFi P2P", e)
+        }
+    }
+
+    /**
+     * Check if WiFi P2P is connected
+     */
+    fun isWifiP2PConnected(): Boolean {
+        return try {
+            cxrApi?.isWifiP2PConnected ?: false
+        } catch (e: Exception) {
+            isWifiP2PConnectedState
+        }
+    }
+
+    // ============== APK Installation Methods ==============
+
+    /**
+     * Upload and install an APK on the glasses via WiFi P2P.
+     * Requires: Bluetooth connected AND WiFi P2P connected
+     *
+     * @param apkPath Absolute path to the APK file
+     * @return true if upload started successfully
+     */
+    fun startUploadApk(apkPath: String): Boolean {
+        if (!isInitialized) {
+            Log.e(TAG, "SDK not initialized")
+            return false
+        }
+
+        if (!isBluetoothConnectedState) {
+            Log.e(TAG, "Bluetooth not connected")
+            return false
+        }
+
+        // WiFi P2P may be initialized on-demand by the SDK
+        return try {
+            val result = cxrApi?.startUploadApk(apkPath, apkCallback) ?: false
+            Log.d(TAG, "startUploadApk result: $result for path: $apkPath")
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting APK upload", e)
+            false
+        }
+    }
+
+    /**
+     * Cancel an ongoing APK upload
+     */
+    fun stopUploadApk() {
+        try {
+            cxrApi?.stopUploadApk()
+            Log.d(TAG, "APK upload stopped")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping APK upload", e)
+        }
+    }
+
+    // ============== Status Methods ==============
+
     /**
      * Check if SDK is ready
      */
     fun isReady(): Boolean = isInitialized
 
     /**
-     * Check if connected to glasses
+     * Check if connected to glasses via Bluetooth
      */
     fun isConnected(): Boolean {
         return try {
             cxrApi?.isBluetoothConnected ?: false
         } catch (e: Exception) {
-            false
+            isBluetoothConnectedState
+        }
+    }
+
+    /**
+     * Get saved MAC address for reconnection
+     */
+    fun getSavedMacAddress(): String? = savedMacAddress
+
+    /**
+     * Get saved device name
+     */
+    fun getSavedDeviceName(): String? = savedDeviceName
+
+    /**
+     * Attempt to reconnect to previously connected glasses
+     */
+    fun reconnect(): Boolean {
+        val mac = savedMacAddress
+        val name = savedDeviceName
+        if (mac.isNullOrEmpty() || name.isNullOrEmpty()) {
+            Log.w(TAG, "No saved connection info for reconnection")
+            return false
+        }
+        connectBluetooth(mac, name)
+        return true
+    }
+
+    /**
+     * Disconnect from glasses
+     */
+    fun disconnect() {
+        try {
+            deinitWifiP2P()
+            cxrApi?.deinitBluetooth()
+            isBluetoothConnectedState = false
+            Log.d(TAG, "Disconnected from glasses")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disconnecting", e)
         }
     }
 
@@ -204,10 +435,13 @@ object RokidSdkManager {
         if (!isInitialized) return
 
         try {
+            deinitWifiP2P()
             cxrApi?.clearCommunicationDevice()
             cxrApi = null
             appContext = null
             isInitialized = false
+            isBluetoothConnectedState = false
+            isWifiP2PConnectedState = false
             Log.d(TAG, "Rokid SDK cleaned up")
         } catch (e: Exception) {
             Log.e(TAG, "Error cleaning up Rokid SDK", e)
