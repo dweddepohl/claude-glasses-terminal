@@ -41,6 +41,7 @@ object RokidSdkManager {
     // Saved connection info for reconnection
     private var savedSocketUuid: String? = null
     private var savedMacAddress: String? = null
+    private var savedRokidAccount: String? = null
     private var savedDeviceName: String? = null
 
     // Callbacks for glasses events
@@ -76,14 +77,18 @@ object RokidSdkManager {
             // Save for reconnection
             savedSocketUuid = socketUuid
             savedMacAddress = macAddress
+            savedRokidAccount = rokidAccount
             onConnectionInfo?.invoke(socketUuid ?: "", macAddress ?: "", rokidAccount ?: "", deviceType)
 
             // After initBluetooth, we need to call connectBluetooth to complete connection
             if (pendingConnect && !socketUuid.isNullOrEmpty() && !macAddress.isNullOrEmpty()) {
-                Log.i(TAG, "Got connection info, now calling connectBluetooth with socketUuid and macAddress...")
+                Log.i(TAG, "Got connection info, now calling connectBluetooth...")
                 pendingConnect = false
-                // connectBluetooth takes: socketUuid, macAddress (not name, mac!)
-                connectBluetoothInternal(socketUuid, macAddress)
+                // Use rokidAccount from callback if provided, otherwise empty string
+                // (accessKey is for API auth, not Bluetooth pairing)
+                val accountToUse = rokidAccount ?: ""
+                Log.i(TAG, "  Using rokidAccount: '${accountToUse.take(20)}' (empty=${accountToUse.isEmpty()})")
+                connectBluetoothInternal(socketUuid, macAddress, rokidAccount = accountToUse)
             }
         }
 
@@ -249,16 +254,24 @@ object RokidSdkManager {
         }
 
         try {
+            // Determine which account to use:
+            // - First try rokidAccount from onConnectionInfo (if glasses already paired)
+            // - Fall back to empty string (for new pairing)
+            val accountToUse = rokidAccount ?: ""
+
             Log.i(TAG, "=== connectBluetoothInternal ===")
             Log.i(TAG, "  socketUuid=$socketUuid")
             Log.i(TAG, "  macAddress=$macAddress")
+            Log.i(TAG, "  rokidAccount='$accountToUse' (length=${accountToUse.length})")
+            Log.i(TAG, "  encryptKey=${encryptKey?.size ?: 0} bytes")
+
             cxrApi?.connectBluetooth(
                 context,
-                socketUuid,      // First param is socketUuid
-                macAddress,      // Second param is macAddress
+                socketUuid,
+                macAddress,
                 bluetoothCallback,
                 encryptKey ?: ByteArray(0),
-                rokidAccount ?: BuildConfig.ROKID_ACCESS_KEY
+                accountToUse
             )
             Log.i(TAG, "connectBluetooth called, waiting for onConnected callback...")
         } catch (e: Exception) {
