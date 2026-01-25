@@ -242,13 +242,22 @@ class GlassesConnectionManager(private val context: Context) {
     }
 
     /**
-     * Connect to a device by address (for reconnection)
+     * Connect to a device using saved connection info (for reconnection).
+     * Requires both socketUuid and macAddress from previous connection.
      */
-    fun connectToDevice(address: String, name: String = "Rokid Glasses") {
+    fun connectWithSavedInfo(socketUuid: String, macAddress: String) {
         _connectionState.value = ConnectionState.Connecting
-        Log.d(TAG, "Connecting to device: $name ($address)")
+        Log.d(TAG, "Reconnecting with socketUuid=$socketUuid, mac=$macAddress")
 
-        RokidSdkManager.connectBluetooth(address, name)
+        RokidSdkManager.connectBluetooth(socketUuid, macAddress)
+    }
+
+    /**
+     * Attempt to reconnect using saved connection info
+     */
+    fun reconnect(): Boolean {
+        _connectionState.value = ConnectionState.Connecting
+        return RokidSdkManager.reconnect()
     }
 
     /**

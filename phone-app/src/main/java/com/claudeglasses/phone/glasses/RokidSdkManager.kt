@@ -39,6 +39,7 @@ object RokidSdkManager {
     private var isWifiP2PConnectedState = false
 
     // Saved connection info for reconnection
+    private var savedSocketUuid: String? = null
     private var savedMacAddress: String? = null
     private var savedDeviceName: String? = null
 
@@ -64,19 +65,25 @@ object RokidSdkManager {
     private var pendingConnect = false
 
     private val bluetoothCallback = object : BluetoothStatusCallback {
-        override fun onConnectionInfo(name: String?, mac: String?, sn: String?, deviceType: Int) {
+        // Parameters are: socketUuid, macAddress, rokidAccount, deviceType
+        override fun onConnectionInfo(socketUuid: String?, macAddress: String?, rokidAccount: String?, deviceType: Int) {
             Log.i(TAG, "=== onConnectionInfo ===")
-            Log.i(TAG, "  name=$name, mac=$mac, sn=$sn, type=$deviceType")
+            Log.i(TAG, "  socketUuid=$socketUuid")
+            Log.i(TAG, "  macAddress=$macAddress")
+            Log.i(TAG, "  rokidAccount=$rokidAccount")
+            Log.i(TAG, "  deviceType=$deviceType")
+
             // Save for reconnection
-            savedMacAddress = mac
-            savedDeviceName = name
-            onConnectionInfo?.invoke(name ?: "", mac ?: "", sn ?: "", deviceType)
+            savedSocketUuid = socketUuid
+            savedMacAddress = macAddress
+            onConnectionInfo?.invoke(socketUuid ?: "", macAddress ?: "", rokidAccount ?: "", deviceType)
 
             // After initBluetooth, we need to call connectBluetooth to complete connection
-            if (pendingConnect && !mac.isNullOrEmpty() && !name.isNullOrEmpty()) {
-                Log.i(TAG, "Got connection info, now calling connectBluetooth...")
+            if (pendingConnect && !socketUuid.isNullOrEmpty() && !macAddress.isNullOrEmpty()) {
+                Log.i(TAG, "Got connection info, now calling connectBluetooth with socketUuid and macAddress...")
                 pendingConnect = false
-                connectBluetooth(mac, name)
+                // connectBluetooth takes: socketUuid, macAddress (not name, mac!)
+                connectBluetoothInternal(socketUuid, macAddress)
             }
         }
 
@@ -228,12 +235,11 @@ object RokidSdkManager {
     }
 
     /**
-     * Connect to glasses via Bluetooth using address.
-     * Call this after initBluetooth has provided connection info via onConnectionInfo callback.
+     * Internal method to connect using socketUuid and macAddress from onConnectionInfo.
      */
-    fun connectBluetooth(
-        deviceAddress: String,
-        deviceName: String,
+    private fun connectBluetoothInternal(
+        socketUuid: String,
+        macAddress: String,
         encryptKey: ByteArray? = null,
         rokidAccount: String? = null
     ) {
@@ -243,11 +249,13 @@ object RokidSdkManager {
         }
 
         try {
-            Log.i(TAG, "=== connectBluetooth === Connecting to: $deviceName ($deviceAddress)")
+            Log.i(TAG, "=== connectBluetoothInternal ===")
+            Log.i(TAG, "  socketUuid=$socketUuid")
+            Log.i(TAG, "  macAddress=$macAddress")
             cxrApi?.connectBluetooth(
                 context,
-                deviceAddress,
-                deviceName,
+                socketUuid,      // First param is socketUuid
+                macAddress,      // Second param is macAddress
                 bluetoothCallback,
                 encryptKey ?: ByteArray(0),
                 rokidAccount ?: BuildConfig.ROKID_ACCESS_KEY
@@ -256,6 +264,19 @@ object RokidSdkManager {
         } catch (e: Exception) {
             Log.e(TAG, "Error connecting via Bluetooth", e)
         }
+    }
+
+    /**
+     * Connect to glasses via Bluetooth using saved connection info.
+     * For reconnection after initial pairing.
+     */
+    fun connectBluetooth(
+        socketUuid: String,
+        macAddress: String,
+        encryptKey: ByteArray? = null,
+        rokidAccount: String? = null
+    ) {
+        connectBluetoothInternal(socketUuid, macAddress, encryptKey, rokidAccount)
     }
 
     /**
@@ -410,15 +431,21 @@ object RokidSdkManager {
      * Attempt to reconnect to previously connected glasses
      */
     fun reconnect(): Boolean {
+        val socketUuid = savedSocketUuid
         val mac = savedMacAddress
-        val name = savedDeviceName
-        if (mac.isNullOrEmpty() || name.isNullOrEmpty()) {
-            Log.w(TAG, "No saved connection info for reconnection")
+        if (socketUuid.isNullOrEmpty() || mac.isNullOrEmpty()) {
+            Log.w(TAG, "No saved connection info for reconnection (socketUuid=$socketUuid, mac=$mac)")
             return false
         }
-        connectBluetooth(mac, name)
+        Log.i(TAG, "Reconnecting with saved socketUuid and macAddress...")
+        connectBluetooth(socketUuid, mac)
         return true
     }
+
+    /**
+     * Get saved socket UUID for reconnection
+     */
+    fun getSavedSocketUuid(): String? = savedSocketUuid
 
     /**
      * Disconnect from glasses
