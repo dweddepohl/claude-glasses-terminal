@@ -60,30 +60,43 @@ object RokidSdkManager {
     var onApkInstallSucceed: (() -> Unit)? = null
     var onApkInstallFailed: (() -> Unit)? = null
 
+    // Track if we're in init phase (need to call connectBluetooth after getting info)
+    private var pendingConnect = false
+
     private val bluetoothCallback = object : BluetoothStatusCallback {
         override fun onConnectionInfo(name: String?, mac: String?, sn: String?, deviceType: Int) {
-            Log.d(TAG, "Connection info: name=$name, mac=$mac, sn=$sn, type=$deviceType")
+            Log.i(TAG, "=== onConnectionInfo ===")
+            Log.i(TAG, "  name=$name, mac=$mac, sn=$sn, type=$deviceType")
             // Save for reconnection
             savedMacAddress = mac
             savedDeviceName = name
             onConnectionInfo?.invoke(name ?: "", mac ?: "", sn ?: "", deviceType)
+
+            // After initBluetooth, we need to call connectBluetooth to complete connection
+            if (pendingConnect && !mac.isNullOrEmpty() && !name.isNullOrEmpty()) {
+                Log.i(TAG, "Got connection info, now calling connectBluetooth...")
+                pendingConnect = false
+                connectBluetooth(mac, name)
+            }
         }
 
         override fun onConnected() {
-            Log.d(TAG, "Bluetooth connected to glasses")
+            Log.i(TAG, "=== onConnected === Bluetooth connected to glasses!")
             isBluetoothConnectedState = true
+            pendingConnect = false
             onGlassesConnected?.invoke()
         }
 
         override fun onDisconnected() {
-            Log.d(TAG, "Bluetooth disconnected from glasses")
+            Log.i(TAG, "=== onDisconnected === Bluetooth disconnected from glasses")
             isBluetoothConnectedState = false
             onGlassesDisconnected?.invoke()
         }
 
         override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
-            Log.e(TAG, "Bluetooth connection failed: $errorCode")
+            Log.e(TAG, "=== onFailed === Bluetooth connection failed: $errorCode")
             isBluetoothConnectedState = false
+            pendingConnect = false
             onBluetoothFailed?.invoke(errorCode?.name ?: "Unknown error")
         }
     }
@@ -193,7 +206,9 @@ object RokidSdkManager {
     }
 
     /**
-     * Initialize Bluetooth connection with a specific device
+     * Initialize Bluetooth connection with a specific device.
+     * This is the first step - it will trigger onConnectionInfo callback,
+     * then we automatically call connectBluetooth to complete the connection.
      */
     fun initBluetooth(device: BluetoothDevice) {
         val context = appContext ?: run {
@@ -202,15 +217,19 @@ object RokidSdkManager {
         }
 
         try {
+            Log.i(TAG, "=== initBluetooth === Starting with device: ${device.address}")
+            pendingConnect = true  // Flag to call connectBluetooth after getting info
             cxrApi?.initBluetooth(context, device, bluetoothCallback)
-            Log.d(TAG, "Bluetooth initialized with device: ${device.address}")
+            Log.i(TAG, "initBluetooth called, waiting for onConnectionInfo callback...")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing Bluetooth", e)
+            pendingConnect = false
         }
     }
 
     /**
-     * Connect to glasses via Bluetooth using address
+     * Connect to glasses via Bluetooth using address.
+     * Call this after initBluetooth has provided connection info via onConnectionInfo callback.
      */
     fun connectBluetooth(
         deviceAddress: String,
@@ -224,15 +243,16 @@ object RokidSdkManager {
         }
 
         try {
+            Log.i(TAG, "=== connectBluetooth === Connecting to: $deviceName ($deviceAddress)")
             cxrApi?.connectBluetooth(
                 context,
                 deviceAddress,
                 deviceName,
                 bluetoothCallback,
                 encryptKey ?: ByteArray(0),
-                rokidAccount ?: ""
+                rokidAccount ?: BuildConfig.ROKID_ACCESS_KEY
             )
-            Log.d(TAG, "Connecting to: $deviceName ($deviceAddress)")
+            Log.i(TAG, "connectBluetooth called, waiting for onConnected callback...")
         } catch (e: Exception) {
             Log.e(TAG, "Error connecting via Bluetooth", e)
         }
