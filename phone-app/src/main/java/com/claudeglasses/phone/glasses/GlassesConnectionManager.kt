@@ -217,12 +217,4 @@ class GlassesConnectionManager(private val context: Context) {
         Log.d(TAG, "Sending raw message to glasses")
     }
 
-    /**
-     * Send a command to install APK on glasses
-     */
-    fun installApkOnGlasses(apkPath: String) {
-        Log.d(TAG, "Installing APK on glasses: $apkPath")
-        // TODO: Use CXR-M SDK APK installation feature
-        // cxrClient?.installApk(apkPath)
-    }
 }

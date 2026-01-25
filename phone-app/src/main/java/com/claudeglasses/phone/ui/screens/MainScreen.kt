@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -52,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.claudeglasses.phone.R
+import com.claudeglasses.phone.glasses.ApkInstaller
 import com.claudeglasses.phone.glasses.GlassesConnectionManager
 import com.claudeglasses.phone.terminal.TerminalClient
 import com.claudeglasses.phone.voice.VoiceCommandHandler
@@ -67,12 +69,14 @@ fun MainScreen() {
     val glassesManager = remember { GlassesConnectionManager(context) }
     val terminalClient = remember { TerminalClient() }
     val voiceHandler = remember { VoiceCommandHandler(context) }
+    val apkInstaller = remember { ApkInstaller(context) }
 
     // State
     val glassesState by glassesManager.connectionState.collectAsState()
     val terminalState by terminalClient.connectionState.collectAsState()
     val terminalLines by terminalClient.terminalLines.collectAsState()
     val isListening by voiceHandler.isListening.collectAsState()
+    val installState by apkInstaller.installState.collectAsState()
 
     // 10.0.2.2 is the Android emulator's alias for host machine localhost
     var serverUrl by remember { mutableStateOf("ws://10.0.2.2:8080") }
@@ -357,10 +361,23 @@ fun MainScreen() {
                     glassesManager.disableDebugMode()
                 }
             },
-            onDismiss = { showSettings = false },
+            onDismiss = {
+                showSettings = false
+                // Reset install state when closing dialog
+                if (installState is ApkInstaller.InstallState.Success ||
+                    installState is ApkInstaller.InstallState.Error) {
+                    apkInstaller.resetState()
+                }
+            },
+            installState = installState,
             onInstallGlassesApp = {
-                // TODO: Trigger APK installation on glasses
-                glassesManager.installApkOnGlasses("glasses-app.apk")
+                apkInstaller.installGlassesApp()
+            },
+            onCancelInstall = {
+                apkInstaller.cancelInstallation()
+            },
+            onOpenGlassesApp = {
+                apkInstaller.openGlassesApp()
             }
         )
     }
@@ -515,10 +532,20 @@ fun SettingsDialog(
     debugModeEnabled: Boolean,
     onDebugModeChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
-    onInstallGlassesApp: () -> Unit
+    installState: ApkInstaller.InstallState,
+    onInstallGlassesApp: () -> Unit,
+    onCancelInstall: () -> Unit,
+    onOpenGlassesApp: () -> Unit
 ) {
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            // Don't allow dismissing while installing
+            if (installState is ApkInstaller.InstallState.Idle ||
+                installState is ApkInstaller.InstallState.Success ||
+                installState is ApkInstaller.InstallState.Error) {
+                onDismiss()
+            }
+        },
         title = { Text("Settings") },
         text = {
             Column {
@@ -561,20 +588,171 @@ fun SettingsDialog(
                 }
 
                 Spacer(Modifier.height(16.dp))
-                Button(
-                    onClick = onInstallGlassesApp,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Install App on Glasses")
-                }
+
+                // Installation section
+                InstallationSection(
+                    installState = installState,
+                    onInstall = onInstallGlassesApp,
+                    onCancel = onCancelInstall,
+                    onOpenApp = onOpenGlassesApp
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                onClick = onDismiss,
+                enabled = installState is ApkInstaller.InstallState.Idle ||
+                         installState is ApkInstaller.InstallState.Success ||
+                         installState is ApkInstaller.InstallState.Error
+            ) {
                 Text("Close")
             }
         }
     )
+}
+
+@Composable
+private fun InstallationSection(
+    installState: ApkInstaller.InstallState,
+    onInstall: () -> Unit,
+    onCancel: () -> Unit,
+    onOpenApp: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            "Glasses App Installation",
+            style = MaterialTheme.typography.titleSmall
+        )
+        Spacer(Modifier.height(8.dp))
+
+        when (installState) {
+            is ApkInstaller.InstallState.Idle -> {
+                Text(
+                    "Install the glasses app on your connected Rokid glasses.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onInstall,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.CloudUpload, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Install App on Glasses")
+                }
+            }
+
+            is ApkInstaller.InstallState.CheckingConnection -> {
+                InstallProgressRow("Checking connection...")
+            }
+
+            is ApkInstaller.InstallState.InitializingWifiP2P -> {
+                InstallProgressRow("Establishing WiFi P2P connection...")
+            }
+
+            is ApkInstaller.InstallState.PreparingApk -> {
+                InstallProgressRow("Preparing APK...")
+            }
+
+            is ApkInstaller.InstallState.Uploading -> {
+                InstallProgressRow(installState.message)
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Cancel")
+                }
+            }
+
+            is ApkInstaller.InstallState.Installing -> {
+                InstallProgressRow(installState.message)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Do not disconnect the glasses",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
+
+            is ApkInstaller.InstallState.Success -> {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = Color(0xFF4CAF50),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        installState.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF4CAF50)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onOpenApp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.OpenInNew, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Open App on Glasses")
+                }
+            }
+
+            is ApkInstaller.InstallState.Error -> {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        Icons.Default.Error,
+                        contentDescription = null,
+                        tint = Color(0xFFF44336),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        installState.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFFF44336)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onInstall,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Try Again")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InstallProgressRow(message: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(20.dp),
+            strokeWidth = 2.dp
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            message,
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
 }
 
 private fun handleVoiceCommand(command: String, terminalClient: TerminalClient) {

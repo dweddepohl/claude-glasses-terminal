@@ -1,212 +1,318 @@
 package com.claudeglasses.phone.glasses
 
+import android.content.Context
 import android.util.Log
-import dadb.Dadb
-import kotlinx.coroutines.Dispatchers
+import com.rokid.cxr.client.extend.CxrApi
+import com.rokid.cxr.client.extend.callbacks.ApkStatusCallback
+import com.rokid.cxr.client.extend.callbacks.WifiP2PStatusCallback
+import com.rokid.cxr.client.extend.infos.RKAppInfo
+import com.rokid.cxr.client.utils.ValueUtil
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 
 /**
- * Handles APK installation on Rokid glasses via ADB over WiFi.
+ * Handles APK installation on Rokid glasses using CXR-M SDK.
  *
- * Prerequisites on glasses:
- * 1. Enable Developer Options (tap Build Number 7 times)
- * 2. Enable USB debugging
- * 3. Enable Wireless debugging
- * 4. Connect to same WiFi network as phone
+ * The SDK uses WiFi P2P for file transfers and Bluetooth for control.
  */
-class ApkInstaller {
+class ApkInstaller(private val context: Context) {
 
     companion object {
         private const val TAG = "ApkInstaller"
-        private const val DEFAULT_ADB_PORT = 5555
+        private const val GLASSES_APP_ASSET = "glasses-app-release.apk"
+        private const val GLASSES_APP_PACKAGE = "com.claudeglasses.glasses"
+        private const val GLASSES_APP_ACTIVITY = "com.claudeglasses.glasses.HudActivity"
     }
 
+    /**
+     * Installation state machine
+     */
     sealed class InstallState {
         object Idle : InstallState()
-        data class Connecting(val host: String) : InstallState()
-        data class Transferring(val progress: Float) : InstallState()
-        object Installing : InstallState()
-        data class Success(val packageName: String) : InstallState()
+        object CheckingConnection : InstallState()
+        object InitializingWifiP2P : InstallState()
+        object PreparingApk : InstallState()
+        data class Uploading(val message: String = "Uploading APK...") : InstallState()
+        data class Installing(val message: String = "Installing...") : InstallState()
+        data class Success(val message: String = "Installation complete!") : InstallState()
         data class Error(val message: String) : InstallState()
     }
 
     private val _installState = MutableStateFlow<InstallState>(InstallState.Idle)
     val installState: StateFlow<InstallState> = _installState.asStateFlow()
 
+    private val cxrApi: CxrApi? = try {
+        CxrApi.getInstance()
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to get CxrApi instance", e)
+        null
+    }
+
+    private var isWifiP2PConnected = false
+    private var currentApkPath: String? = null
+
+    private val wifiP2PCallback = object : WifiP2PStatusCallback {
+        override fun onConnected() {
+            Log.d(TAG, "WiFi P2P connected")
+            isWifiP2PConnected = true
+            // Proceed with upload now that WiFi P2P is ready
+            currentApkPath?.let { path ->
+                startApkUpload(path)
+            }
+        }
+
+        override fun onDisconnected() {
+            Log.d(TAG, "WiFi P2P disconnected")
+            isWifiP2PConnected = false
+        }
+
+        override fun onFailed(errorCode: ValueUtil.CxrWifiErrorCode?) {
+            Log.e(TAG, "WiFi P2P connection failed: $errorCode")
+            isWifiP2PConnected = false
+            _installState.value = InstallState.Error("WiFi P2P connection failed: ${errorCode ?: "unknown"}")
+        }
+    }
+
+    private val apkStatusCallback = object : ApkStatusCallback {
+        override fun onUploadApkSucceed() {
+            Log.d(TAG, "APK upload succeeded")
+            _installState.value = InstallState.Installing("Installing on glasses...")
+        }
+
+        override fun onUploadApkFailed() {
+            Log.e(TAG, "APK upload failed")
+            _installState.value = InstallState.Error("Failed to upload APK to glasses")
+            cleanup()
+        }
+
+        override fun onInstallApkSucceed() {
+            Log.d(TAG, "APK installation succeeded")
+            _installState.value = InstallState.Success("Glasses app installed successfully!")
+            cleanup()
+        }
+
+        override fun onInstallApkFailed() {
+            Log.e(TAG, "APK installation failed")
+            _installState.value = InstallState.Error("Failed to install APK on glasses")
+            cleanup()
+        }
+
+        override fun onUninstallApkSucceed() {
+            Log.d(TAG, "APK uninstall succeeded")
+        }
+
+        override fun onUninstallApkFailed() {
+            Log.e(TAG, "APK uninstall failed")
+        }
+
+        override fun onOpenAppSucceed() {
+            Log.d(TAG, "App opened successfully")
+        }
+
+        override fun onOpenAppFailed() {
+            Log.e(TAG, "Failed to open app")
+        }
+    }
+
     /**
-     * Test connection to glasses via ADB.
+     * Install the bundled glasses app APK on the connected glasses.
      *
-     * @param host IP address of the glasses (e.g., "192.168.1.100")
-     * @param port ADB port (default 5555)
-     * @return true if connection successful
+     * Flow:
+     * 1. Check Bluetooth connection
+     * 2. Initialize WiFi P2P (if needed)
+     * 3. Extract APK from assets
+     * 4. Upload APK via SDK
+     * 5. Wait for installation callbacks
      */
-    suspend fun testConnection(host: String, port: Int = DEFAULT_ADB_PORT): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                Log.d(TAG, "Testing connection to $host:$port")
-                Dadb.create(host, port).use { dadb ->
-                    val response = dadb.shell("echo connected")
-                    val success = response.exitCode == 0
-                    Log.d(TAG, "Connection test result: $success")
-                    success
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Connection test failed", e)
-                false
-            }
+    fun installGlassesApp() {
+        if (_installState.value !is InstallState.Idle &&
+            _installState.value !is InstallState.Error &&
+            _installState.value !is InstallState.Success) {
+            Log.w(TAG, "Installation already in progress")
+            return
+        }
+
+        _installState.value = InstallState.CheckingConnection
+
+        // Check Bluetooth connection
+        val api = cxrApi
+        if (api == null) {
+            _installState.value = InstallState.Error("Rokid SDK not initialized")
+            return
+        }
+
+        if (!api.isBluetoothConnected) {
+            _installState.value = InstallState.Error("Not connected to glasses via Bluetooth")
+            return
+        }
+
+        Log.d(TAG, "Bluetooth connected, preparing APK")
+        _installState.value = InstallState.PreparingApk
+
+        // Extract APK from assets to cache directory
+        val apkFile = extractApkFromAssets()
+        if (apkFile == null) {
+            _installState.value = InstallState.Error("Failed to extract APK from app bundle")
+            return
+        }
+
+        currentApkPath = apkFile.absolutePath
+
+        // Check if WiFi P2P is already connected
+        if (api.isWifiP2PConnected) {
+            Log.d(TAG, "WiFi P2P already connected, starting upload")
+            startApkUpload(apkFile.absolutePath)
+        } else {
+            // Initialize WiFi P2P first
+            Log.d(TAG, "Initializing WiFi P2P connection")
+            _installState.value = InstallState.InitializingWifiP2P
+            api.initWifiP2P(wifiP2PCallback)
         }
     }
 
     /**
-     * Install APK on glasses via ADB over WiFi.
-     *
-     * @param host IP address of the glasses
-     * @param port ADB port (default 5555)
-     * @param apkFile The APK file to install
+     * Install APK from a specific file path.
      */
-    suspend fun installApk(
-        host: String,
-        port: Int = DEFAULT_ADB_PORT,
-        apkFile: File
-    ): Result<String> {
-        return withContext(Dispatchers.IO) {
-            try {
-                if (!apkFile.exists()) {
-                    val error = "APK file not found: ${apkFile.absolutePath}"
-                    _installState.value = InstallState.Error(error)
-                    return@withContext Result.failure(Exception(error))
-                }
+    fun installApkFromPath(apkPath: String) {
+        if (_installState.value !is InstallState.Idle &&
+            _installState.value !is InstallState.Error &&
+            _installState.value !is InstallState.Success) {
+            Log.w(TAG, "Installation already in progress")
+            return
+        }
 
-                Log.d(TAG, "Starting APK installation: ${apkFile.name} (${apkFile.length() / 1024}KB)")
-                _installState.value = InstallState.Connecting(host)
+        val file = File(apkPath)
+        if (!file.exists()) {
+            _installState.value = InstallState.Error("APK file not found: $apkPath")
+            return
+        }
 
-                Dadb.create(host, port).use { dadb ->
-                    // Verify connection
-                    Log.d(TAG, "Connected to $host:$port")
+        _installState.value = InstallState.CheckingConnection
 
-                    // Start transfer
-                    _installState.value = InstallState.Transferring(0f)
+        val api = cxrApi
+        if (api == null) {
+            _installState.value = InstallState.Error("Rokid SDK not initialized")
+            return
+        }
 
-                    // Install the APK
-                    // Note: dadb.install() handles the full process
-                    Log.d(TAG, "Installing APK...")
-                    _installState.value = InstallState.Installing
+        if (!api.isBluetoothConnected) {
+            _installState.value = InstallState.Error("Not connected to glasses via Bluetooth")
+            return
+        }
 
-                    dadb.install(apkFile)
+        currentApkPath = apkPath
 
-                    // Get package name from APK for confirmation
-                    val packageName = getPackageNameFromApk(apkFile)
-                    Log.d(TAG, "Installation complete: $packageName")
+        if (api.isWifiP2PConnected) {
+            startApkUpload(apkPath)
+        } else {
+            _installState.value = InstallState.InitializingWifiP2P
+            api.initWifiP2P(wifiP2PCallback)
+        }
+    }
 
-                    _installState.value = InstallState.Success(packageName)
-                    Result.success(packageName)
-                }
-            } catch (e: Exception) {
-                val errorMessage = when {
-                    e.message?.contains("Connection refused") == true ->
-                        "Connection refused. Ensure wireless debugging is enabled on glasses."
-                    e.message?.contains("timeout") == true ->
-                        "Connection timed out. Check glasses IP and WiFi connection."
-                    e.message?.contains("INSTALL_FAILED") == true ->
-                        "Installation failed: ${e.message}"
-                    else ->
-                        "Installation error: ${e.message}"
-                }
-                Log.e(TAG, "APK installation failed", e)
-                _installState.value = InstallState.Error(errorMessage)
-                Result.failure(Exception(errorMessage))
-            }
+    private fun startApkUpload(apkPath: String) {
+        _installState.value = InstallState.Uploading("Uploading APK to glasses...")
+
+        val started = cxrApi?.startUploadApk(apkPath, apkStatusCallback) ?: false
+        if (!started) {
+            Log.e(TAG, "Failed to start APK upload")
+            _installState.value = InstallState.Error("Failed to start APK upload")
+            cleanup()
+        } else {
+            Log.d(TAG, "APK upload started: $apkPath")
         }
     }
 
     /**
-     * Install APK from a path string.
+     * Cancel the current installation.
      */
-    suspend fun installApk(
-        host: String,
-        port: Int = DEFAULT_ADB_PORT,
-        apkPath: String
-    ): Result<String> {
-        return installApk(host, port, File(apkPath))
+    fun cancelInstallation() {
+        Log.d(TAG, "Cancelling installation")
+        cxrApi?.stopUploadApk()
+        cleanup()
+        _installState.value = InstallState.Idle
     }
 
     /**
-     * Launch an app on the glasses.
+     * Open the glasses app on the connected glasses.
      */
-    suspend fun launchApp(
-        host: String,
-        port: Int = DEFAULT_ADB_PORT,
-        packageName: String,
-        activityName: String? = null
-    ): Result<Unit> {
-        return withContext(Dispatchers.IO) {
-            try {
-                Dadb.create(host, port).use { dadb ->
-                    val command = if (activityName != null) {
-                        "am start -n $packageName/$activityName"
-                    } else {
-                        "monkey -p $packageName -c android.intent.category.LAUNCHER 1"
-                    }
-                    val response = dadb.shell(command)
-                    if (response.exitCode == 0) {
-                        Log.d(TAG, "Launched app: $packageName")
-                        Result.success(Unit)
-                    } else {
-                        Result.failure(Exception("Failed to launch: ${response.output}"))
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to launch app", e)
-                Result.failure(e)
-            }
+    fun openGlassesApp() {
+        val api = cxrApi ?: return
+
+        if (!api.isBluetoothConnected) {
+            Log.e(TAG, "Cannot open app: not connected to glasses")
+            return
         }
+
+        val appInfo = RKAppInfo(GLASSES_APP_PACKAGE, GLASSES_APP_ACTIVITY)
+        api.openApp(appInfo, apkStatusCallback)
     }
 
     /**
-     * Get device info from glasses.
+     * Uninstall the glasses app from the connected glasses.
      */
-    suspend fun getDeviceInfo(host: String, port: Int = DEFAULT_ADB_PORT): DeviceInfo? {
-        return withContext(Dispatchers.IO) {
-            try {
-                Dadb.create(host, port).use { dadb ->
-                    val model = dadb.shell("getprop ro.product.model").output.trim()
-                    val androidVersion = dadb.shell("getprop ro.build.version.release").output.trim()
-                    val serialNumber = dadb.shell("getprop ro.serialno").output.trim()
-                    DeviceInfo(
-                        model = model,
-                        androidVersion = androidVersion,
-                        serialNumber = serialNumber
-                    )
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to get device info", e)
-                null
-            }
+    fun uninstallGlassesApp() {
+        val api = cxrApi ?: return
+
+        if (!api.isBluetoothConnected) {
+            Log.e(TAG, "Cannot uninstall: not connected to glasses")
+            return
         }
+
+        api.uninstallApk(GLASSES_APP_PACKAGE, apkStatusCallback)
     }
 
     /**
      * Reset state to idle.
      */
-    fun reset() {
+    fun resetState() {
         _installState.value = InstallState.Idle
     }
 
-    private fun getPackageNameFromApk(apkFile: File): String {
-        // Simple extraction - in a real app you'd use PackageParser
-        // For now, infer from filename if it follows convention
-        return apkFile.nameWithoutExtension
-            .replace("-debug", "")
-            .replace("-release", "")
+    private fun extractApkFromAssets(): File? {
+        return try {
+            val cacheDir = context.cacheDir
+            val apkFile = File(cacheDir, "glasses-app.apk")
+
+            // Check if we have a bundled APK in assets
+            val assetManager = context.assets
+            val assetList = assetManager.list("") ?: emptyArray()
+
+            if (GLASSES_APP_ASSET in assetList) {
+                Log.d(TAG, "Extracting bundled APK from assets")
+                assetManager.open(GLASSES_APP_ASSET).use { input ->
+                    FileOutputStream(apkFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                apkFile
+            } else {
+                // No bundled APK - check if there's one in app's files directory
+                val externalApk = File(context.getExternalFilesDir(null), "glasses-app.apk")
+                if (externalApk.exists()) {
+                    Log.d(TAG, "Using APK from external files: ${externalApk.absolutePath}")
+                    externalApk
+                } else {
+                    Log.e(TAG, "No glasses-app APK found in assets or external files")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error extracting APK from assets", e)
+            null
+        }
     }
 
-    data class DeviceInfo(
-        val model: String,
-        val androidVersion: String,
-        val serialNumber: String
-    )
+    private fun cleanup() {
+        currentApkPath = null
+        // Clean up extracted APK
+        try {
+            File(context.cacheDir, "glasses-app.apk").delete()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to clean up cached APK", e)
+        }
+    }
 }
