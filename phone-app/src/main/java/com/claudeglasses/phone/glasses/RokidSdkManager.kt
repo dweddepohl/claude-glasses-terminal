@@ -44,6 +44,9 @@ object RokidSdkManager {
     private var savedRokidAccount: String? = null
     private var savedDeviceName: String? = null
 
+    // Authorization key (from .lc file) for device binding
+    private var authorizationKey: ByteArray? = null
+
     // Callbacks for glasses events
     var onGlassesConnected: (() -> Unit)? = null
     var onGlassesDisconnected: (() -> Unit)? = null
@@ -84,10 +87,10 @@ object RokidSdkManager {
             if (pendingConnect && !socketUuid.isNullOrEmpty() && !macAddress.isNullOrEmpty()) {
                 Log.i(TAG, "Got connection info, now calling connectBluetooth...")
                 pendingConnect = false
-                // Use rokidAccount from callback if provided, otherwise empty string
-                // (accessKey is for API auth, not Bluetooth pairing)
-                val accountToUse = rokidAccount ?: ""
-                Log.i(TAG, "  Using rokidAccount: '${accountToUse.take(20)}' (empty=${accountToUse.isEmpty()})")
+                // Try accessKey first (for device binding verification), fall back to callback value
+                val accessKey = BuildConfig.ROKID_ACCESS_KEY
+                val accountToUse = if (accessKey.isNotEmpty()) accessKey else (rokidAccount ?: "")
+                Log.i(TAG, "  Using rokidAccount: '${accountToUse.take(20)}...' (fromAccessKey=${accessKey.isNotEmpty()})")
                 connectBluetoothInternal(socketUuid, macAddress, rokidAccount = accountToUse)
             }
         }
@@ -259,18 +262,21 @@ object RokidSdkManager {
             // - Fall back to empty string (for new pairing)
             val accountToUse = rokidAccount ?: ""
 
+            // Use provided encryptKey, or fall back to authorizationKey from .lc file
+            val keyToUse = encryptKey ?: authorizationKey ?: ByteArray(0)
+
             Log.i(TAG, "=== connectBluetoothInternal ===")
             Log.i(TAG, "  socketUuid=$socketUuid")
             Log.i(TAG, "  macAddress=$macAddress")
             Log.i(TAG, "  rokidAccount='$accountToUse' (length=${accountToUse.length})")
-            Log.i(TAG, "  encryptKey=${encryptKey?.size ?: 0} bytes")
+            Log.i(TAG, "  encryptKey=${keyToUse.size} bytes (fromAuthKey=${authorizationKey != null})")
 
             cxrApi?.connectBluetooth(
                 context,
                 socketUuid,
                 macAddress,
                 bluetoothCallback,
-                encryptKey ?: ByteArray(0),
+                keyToUse,
                 accountToUse
             )
             Log.i(TAG, "connectBluetooth called, waiting for onConnected callback...")
@@ -459,6 +465,20 @@ object RokidSdkManager {
      * Get saved socket UUID for reconnection
      */
     fun getSavedSocketUuid(): String? = savedSocketUuid
+
+    /**
+     * Set authorization key from .lc file for device binding verification.
+     * This key is used as the encryptKey parameter during Bluetooth connection.
+     */
+    fun setAuthorizationKey(key: ByteArray?) {
+        authorizationKey = key
+        Log.i(TAG, "Authorization key set: ${key?.size ?: 0} bytes")
+    }
+
+    /**
+     * Check if authorization key is loaded
+     */
+    fun hasAuthorizationKey(): Boolean = authorizationKey != null
 
     /**
      * Disconnect from glasses
