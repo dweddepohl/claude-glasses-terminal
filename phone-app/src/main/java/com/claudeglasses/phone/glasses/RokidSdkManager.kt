@@ -75,6 +75,11 @@ object RokidSdkManager {
     var onApkInstallSucceed: (() -> Unit)? = null
     var onApkInstallFailed: (() -> Unit)? = null
 
+    // AI scene callbacks (voice input via glasses long-press)
+    var onAiKeyDown: (() -> Unit)? = null
+    var onAiKeyUp: (() -> Unit)? = null
+    var onAiExit: (() -> Unit)? = null
+
     private val bluetoothCallback = object : BluetoothStatusCallback {
         override fun onConnectionInfo(socketUuid: String?, macAddress: String?, rokidAccount: String?, deviceType: Int) {
             Log.i(TAG, "=== onConnectionInfo ===")
@@ -265,6 +270,22 @@ object RokidSdkManager {
                     } else {
                         cmd?.let { onMessageFromGlasses?.invoke(it, caps) }
                     }
+                }
+            })
+
+            // Set up AI event listener for glasses long-press voice activation
+            cxrApi?.setAiEventListener(object : com.rokid.cxr.client.extend.listeners.AiEventListener {
+                override fun onAiKeyDown() {
+                    Log.i(TAG, "AI key pressed on glasses (long press)")
+                    onAiKeyDown?.invoke()
+                }
+                override fun onAiKeyUp() {
+                    Log.d(TAG, "AI key released on glasses")
+                    onAiKeyUp?.invoke()
+                }
+                override fun onAiExit() {
+                    Log.d(TAG, "AI scene exited on glasses")
+                    onAiExit?.invoke()
                 }
             })
 
@@ -585,6 +606,65 @@ object RokidSdkManager {
      */
     fun clearCommunicationDevice() {
         cxrApi?.clearCommunicationDevice()
+    }
+
+    // --- AI Scene methods (for voice input via glasses long-press) ---
+
+    /**
+     * Send ASR (speech recognition) content to the glasses AI scene.
+     * The glasses display this text in the AI scene UI.
+     */
+    fun sendAsrContent(content: String): ValueUtil.CxrStatus? {
+        Log.d(TAG, "Sending ASR content to glasses: ${content.take(50)}")
+        return cxrApi?.sendAsrContent(content)
+    }
+
+    /**
+     * Notify glasses that ASR recognition returned no result.
+     */
+    fun notifyAsrNone(): ValueUtil.CxrStatus? {
+        Log.d(TAG, "Notifying glasses: ASR none")
+        return cxrApi?.notifyAsrNone()
+    }
+
+    /**
+     * Notify glasses that ASR recognition had an error.
+     */
+    fun notifyAsrError(): ValueUtil.CxrStatus? {
+        Log.d(TAG, "Notifying glasses: ASR error")
+        return cxrApi?.notifyAsrError()
+    }
+
+    /**
+     * Notify glasses that ASR recognition has ended.
+     */
+    fun notifyAsrEnd(): ValueUtil.CxrStatus? {
+        Log.d(TAG, "Notifying glasses: ASR end")
+        return cxrApi?.notifyAsrEnd()
+    }
+
+    /**
+     * Send exit event to dismiss the AI scene on glasses.
+     */
+    fun sendExitEvent(): ValueUtil.CxrStatus? {
+        Log.d(TAG, "Sending exit event to glasses AI scene")
+        return cxrApi?.sendExitEvent()
+    }
+
+    /**
+     * Send TTS content to the glasses AI scene (for displaying AI response text).
+     */
+    fun sendTtsContent(content: String): ValueUtil.CxrStatus? {
+        Log.d(TAG, "Sending TTS content to glasses: ${content.take(50)}")
+        return cxrApi?.sendTtsContent(content)
+    }
+
+    /**
+     * Notify glasses that TTS audio has finished.
+     */
+    fun notifyTtsAudioFinished(): ValueUtil.CxrStatus? {
+        Log.d(TAG, "Notifying glasses: TTS finished")
+        return cxrApi?.notifyTtsAudioFinished()
     }
 
     /**

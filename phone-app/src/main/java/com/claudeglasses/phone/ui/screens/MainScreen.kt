@@ -55,8 +55,10 @@ import androidx.compose.ui.unit.sp
 import com.claudeglasses.phone.R
 import com.claudeglasses.phone.glasses.ApkInstaller
 import com.claudeglasses.phone.glasses.GlassesConnectionManager
+import com.claudeglasses.phone.glasses.RokidSdkManager
 import com.claudeglasses.phone.terminal.TerminalClient
 import com.claudeglasses.phone.voice.VoiceCommandHandler
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -87,9 +89,20 @@ fun MainScreen() {
     var showSettings by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
-    // Initialize voice handler
+    // Initialize voice handler and wire partial result callback
     LaunchedEffect(Unit) {
         voiceHandler.initialize()
+        voiceHandler.onPartialResult = { partialText ->
+            // Send partial ASR to the glasses built-in AI scene UI
+            RokidSdkManager.sendAsrContent(partialText)
+            // Also send via our custom message channel for our HUD overlay
+            val stateMsg = org.json.JSONObject().apply {
+                put("type", "voice_state")
+                put("state", "recognizing")
+                put("text", partialText)
+            }
+            glassesManager.sendRawMessage(stateMsg.toString())
+        }
     }
 
     // Auto-enable debug mode in debug builds for emulator testing
@@ -104,6 +117,29 @@ fun MainScreen() {
     LaunchedEffect(terminalLines.size) {
         if (terminalLines.isNotEmpty()) {
             listState.animateScrollToItem(terminalLines.size - 1)
+        }
+    }
+
+    // Handle AI scene events (glasses long-press triggers voice input)
+    // Note: SDK callbacks run on background threads — must dispatch to main thread
+    // for SpeechRecognizer (which requires main thread).
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    LaunchedEffect(Unit) {
+        glassesManager.onAiKeyDown = {
+            android.util.Log.i("MainScreen", ">>> AI key down from glasses - will start voice recognition")
+            // Delay to let Bluetooth SCO audio channel establish before starting recognizer
+            mainHandler.postDelayed({
+                android.util.Log.i("MainScreen", ">>> Starting voice recognition on main thread")
+                // Route glasses mic to phone via Bluetooth audio
+                RokidSdkManager.setCommunicationDevice()
+                startVoiceRecognition(voiceHandler, terminalClient, glassesManager, mainHandler, isRetry = false)
+            }, 300)
+        }
+        glassesManager.onAiExit = {
+            // AI scene closed on glasses (user released button or it auto-dismissed).
+            // Do NOT stop the recognizer or clear the audio route here — the recognizer
+            // may still be processing speech. Cleanup happens in the result callback.
+            android.util.Log.d("MainScreen", "AI scene exited on glasses (recognizer continues)")
         }
     }
 
@@ -130,6 +166,64 @@ fun MainScreen() {
                         } else {
                             android.util.Log.w("MainScreen", "Voice input was empty, not sending")
                         }
+                    }
+                    "start_voice" -> {
+                        android.util.Log.d("MainScreen", "Glasses requested voice recognition start")
+                        // Route glasses mic to phone via Bluetooth audio
+                        com.claudeglasses.phone.glasses.RokidSdkManager.setCommunicationDevice()
+                        // Start speech recognition on phone
+                        voiceHandler.startListening { result ->
+                            // Clear communication device routing
+                            com.claudeglasses.phone.glasses.RokidSdkManager.clearCommunicationDevice()
+                            // Send final result back to glasses
+                            when (result) {
+                                is VoiceCommandHandler.VoiceResult.Text -> {
+                                    android.util.Log.d("MainScreen", "Voice result text: ${result.text.take(100)}")
+                                    val resultMsg = org.json.JSONObject().apply {
+                                        put("type", "voice_result")
+                                        put("result_type", "text")
+                                        put("text", result.text)
+                                    }
+                                    glassesManager.sendRawMessage(resultMsg.toString())
+                                    // Also forward directly to server
+                                    terminalClient.sendInput(result.text)
+                                }
+                                is VoiceCommandHandler.VoiceResult.Command -> {
+                                    android.util.Log.d("MainScreen", "Voice result command: ${result.command}")
+                                    val resultMsg = org.json.JSONObject().apply {
+                                        put("type", "voice_result")
+                                        put("result_type", "command")
+                                        put("text", result.command)
+                                    }
+                                    glassesManager.sendRawMessage(resultMsg.toString())
+                                }
+                                is VoiceCommandHandler.VoiceResult.Error -> {
+                                    android.util.Log.e("MainScreen", "Voice result error: ${result.message}")
+                                    val resultMsg = org.json.JSONObject().apply {
+                                        put("type", "voice_result")
+                                        put("result_type", "error")
+                                        put("text", result.message)
+                                    }
+                                    glassesManager.sendRawMessage(resultMsg.toString())
+                                }
+                            }
+                        }
+                        // Send listening state to glasses
+                        val stateMsg = org.json.JSONObject().apply {
+                            put("type", "voice_state")
+                            put("state", "listening")
+                        }
+                        glassesManager.sendRawMessage(stateMsg.toString())
+                    }
+                    "cancel_voice" -> {
+                        android.util.Log.d("MainScreen", "Glasses requested voice recognition cancel")
+                        voiceHandler.stopListening()
+                        com.claudeglasses.phone.glasses.RokidSdkManager.clearCommunicationDevice()
+                        val stateMsg = org.json.JSONObject().apply {
+                            put("type", "voice_state")
+                            put("state", "idle")
+                        }
+                        glassesManager.sendRawMessage(stateMsg.toString())
                     }
                     "list_sessions" -> {
                         android.util.Log.d("MainScreen", "Requesting session list for glasses")
@@ -1071,6 +1165,81 @@ private fun InstallProgressRow(message: String) {
             message,
             style = MaterialTheme.typography.bodyMedium
         )
+    }
+}
+
+/**
+ * Start voice recognition with automatic retry on error.
+ * First attempt uses glasses mic (via setCommunicationDevice). If that fails,
+ * retries once with phone mic (clearCommunicationDevice) as fallback.
+ */
+private fun startVoiceRecognition(
+    voiceHandler: VoiceCommandHandler,
+    terminalClient: TerminalClient,
+    glassesManager: GlassesConnectionManager,
+    mainHandler: android.os.Handler,
+    isRetry: Boolean
+) {
+    voiceHandler.startListening { result ->
+        android.util.Log.i("MainScreen", ">>> Voice result received (retry=$isRetry): $result")
+        when (result) {
+            is VoiceCommandHandler.VoiceResult.Text -> {
+                RokidSdkManager.clearCommunicationDevice()
+                if (result.text.isNotEmpty()) {
+                    android.util.Log.i("MainScreen", "AI voice text: ${result.text.take(100)}")
+                    RokidSdkManager.sendAsrContent(result.text)
+                    RokidSdkManager.notifyAsrEnd()
+                    terminalClient.sendInput(result.text)
+                    val resultMsg = org.json.JSONObject().apply {
+                        put("type", "voice_result")
+                        put("result_type", "text")
+                        put("text", result.text)
+                    }
+                    glassesManager.sendRawMessage(resultMsg.toString())
+                    mainHandler.postDelayed({ RokidSdkManager.sendExitEvent() }, 1500)
+                } else {
+                    android.util.Log.i("MainScreen", "AI voice: no speech detected, dismissing")
+                    RokidSdkManager.notifyAsrNone()
+                    mainHandler.postDelayed({ RokidSdkManager.sendExitEvent() }, 500)
+                }
+            }
+            is VoiceCommandHandler.VoiceResult.Command -> {
+                RokidSdkManager.clearCommunicationDevice()
+                android.util.Log.i("MainScreen", "AI voice command: ${result.command}")
+                RokidSdkManager.sendAsrContent(result.command)
+                RokidSdkManager.notifyAsrEnd()
+                terminalClient.sendKey(result.command)
+                val resultMsg = org.json.JSONObject().apply {
+                    put("type", "voice_result")
+                    put("result_type", "command")
+                    put("text", result.command)
+                }
+                glassesManager.sendRawMessage(resultMsg.toString())
+                mainHandler.postDelayed({ RokidSdkManager.sendExitEvent() }, 1000)
+            }
+            is VoiceCommandHandler.VoiceResult.Error -> {
+                if (!isRetry) {
+                    // First attempt failed — retry with phone mic as fallback
+                    android.util.Log.w("MainScreen", "Voice error '${result.message}', retrying with phone mic...")
+                    RokidSdkManager.clearCommunicationDevice()
+                    mainHandler.postDelayed({
+                        startVoiceRecognition(voiceHandler, terminalClient, glassesManager, mainHandler, isRetry = true)
+                    }, 200)
+                } else {
+                    // Retry also failed — give up
+                    android.util.Log.e("MainScreen", "AI voice error (after retry): ${result.message}")
+                    RokidSdkManager.clearCommunicationDevice()
+                    RokidSdkManager.notifyAsrError()
+                    val resultMsg = org.json.JSONObject().apply {
+                        put("type", "voice_result")
+                        put("result_type", "error")
+                        put("text", result.message)
+                    }
+                    glassesManager.sendRawMessage(resultMsg.toString())
+                    mainHandler.postDelayed({ RokidSdkManager.sendExitEvent() }, 2000)
+                }
+            }
+        }
     }
 }
 

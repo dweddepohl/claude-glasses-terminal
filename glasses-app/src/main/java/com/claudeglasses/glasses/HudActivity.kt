@@ -1,7 +1,5 @@
 package com.claudeglasses.glasses
 
-import android.Manifest
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
@@ -9,9 +7,7 @@ import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
-import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -76,17 +72,6 @@ class HudActivity : ComponentActivity() {
     private var isCapturingKeyboardInput = false
     private var keyboardInputBuffer = StringBuilder()
 
-    // Permission launcher for audio recording
-    private val audioPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            startVoiceRecognition()
-        } else {
-            showVoiceError("Mic permission needed")
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -115,12 +100,10 @@ class HudActivity : ComponentActivity() {
 
         Log.i(GlassesApp.TAG, "HudActivity created, debugMode=$DEBUG_MODE")
 
-        // Initialize voice handler
-        voiceHandler = GlassesVoiceHandler(this)
-        val voiceAvailable = voiceHandler.initialize()
-        if (!voiceAvailable) {
-            Log.w(GlassesApp.TAG, "Speech recognition not available - voice commands disabled")
-        }
+        // Initialize voice handler (delegates recognition to phone)
+        voiceHandler = GlassesVoiceHandler()
+        voiceHandler.sendToPhone = { message -> phoneConnection.sendToPhone(message) }
+        voiceHandler.initialize()
 
         // Observe voice state and update terminal state
         lifecycleScope.launch {
@@ -848,15 +831,8 @@ class HudActivity : ComponentActivity() {
     // ============== Voice Recognition Methods ==============
 
     private fun requestVoicePermissionAndStart() {
-        when {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED -> {
-                startVoiceRecognition()
-            }
-            else -> {
-                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            }
-        }
+        // No local permission needed — voice recognition runs on the phone
+        startVoiceRecognition()
     }
 
     private fun startVoiceRecognition() {
@@ -1277,6 +1253,18 @@ class HudActivity : ComponentActivity() {
                     terminalState.value = current.copy(
                         currentSession = if (success) session else current.currentSession
                     )
+                }
+                "voice_state" -> {
+                    // Voice recognition state update from phone
+                    val state = msg.optString("state", "")
+                    val text = msg.optString("text", "")
+                    voiceHandler.handleVoiceState(state, text)
+                }
+                "voice_result" -> {
+                    // Final voice recognition result from phone
+                    val resultType = msg.optString("result_type", "text")
+                    val text = msg.optString("text", "")
+                    voiceHandler.handleVoiceResult(resultType, text)
                 }
                 else -> {
                     Log.d(GlassesApp.TAG, "Unknown message type: $type")

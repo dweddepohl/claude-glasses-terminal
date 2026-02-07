@@ -81,6 +81,10 @@ class GlassesConnectionManager(private val context: Context) {
     // Callback for messages from glasses (both BLE and debug modes)
     var onMessageFromGlasses: ((String) -> Unit)? = null
 
+    // AI scene callbacks (glasses long-press voice activation)
+    var onAiKeyDown: (() -> Unit)? = null
+    var onAiExit: (() -> Unit)? = null
+
     init {
         // Set up SDK callbacks
         setupSdkCallbacks()
@@ -128,6 +132,16 @@ class GlassesConnectionManager(private val context: Context) {
         RokidSdkManager.onMessageFromGlasses = { cmd, caps ->
             // Forward messages from SDK to our callback
             onMessageFromGlasses?.invoke(cmd)
+        }
+
+        // AI scene events (glasses long-press triggers voice input)
+        RokidSdkManager.onAiKeyDown = {
+            Log.d(TAG, "SDK: AI key down (voice activation)")
+            onAiKeyDown?.invoke()
+        }
+        RokidSdkManager.onAiExit = {
+            Log.d(TAG, "SDK: AI scene exited")
+            onAiExit?.invoke()
         }
     }
 

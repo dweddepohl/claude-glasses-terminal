@@ -97,6 +97,7 @@ class VoiceCommandHandler(private val context: Context) {
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var onResult: ((VoiceResult) -> Unit)? = null
+    var onPartialResult: ((String) -> Unit)? = null
 
     fun initialize() {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
@@ -112,6 +113,17 @@ class VoiceCommandHandler(private val context: Context) {
         this.onResult = onResult
         _isListening.value = true
 
+        // Always recreate the SpeechRecognizer for each session to avoid stale state
+        // (e.g. ERROR_RECOGNIZER_BUSY after a previous error)
+        resetRecognizer()
+
+        if (speechRecognizer == null) {
+            Log.e(TAG, "SpeechRecognizer still null after init — recognition unavailable")
+            _isListening.value = false
+            onResult(VoiceResult.Error("Speech recognition unavailable"))
+            return
+        }
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
@@ -119,12 +131,36 @@ class VoiceCommandHandler(private val context: Context) {
         }
 
         try {
+            Log.i(TAG, "Starting SpeechRecognizer.startListening()")
             speechRecognizer?.startListening(intent)
-            Log.d(TAG, "Started listening")
+            Log.i(TAG, "SpeechRecognizer.startListening() called successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting speech recognition", e)
             _isListening.value = false
+            onResult(VoiceResult.Error("Failed to start: ${e.message}"))
         }
+    }
+
+    /**
+     * Destroy and recreate the SpeechRecognizer.
+     * Android's SpeechRecognizer can get stuck after errors, so we always start fresh.
+     */
+    private fun resetRecognizer() {
+        try {
+            speechRecognizer?.destroy()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error destroying old recognizer", e)
+        }
+        speechRecognizer = null
+
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            Log.e(TAG, "Speech recognition not available on this device")
+            return
+        }
+
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        speechRecognizer?.setRecognitionListener(createRecognitionListener())
+        Log.i(TAG, "SpeechRecognizer recreated fresh")
     }
 
     fun stopListening() {
@@ -134,11 +170,11 @@ class VoiceCommandHandler(private val context: Context) {
 
     private fun createRecognitionListener() = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
-            Log.d(TAG, "Ready for speech")
+            Log.i(TAG, ">>> Ready for speech (mic is active)")
         }
 
         override fun onBeginningOfSpeech() {
-            Log.d(TAG, "Speech started")
+            Log.i(TAG, ">>> Speech started (audio detected)")
         }
 
         override fun onRmsChanged(rmsdB: Float) {}
@@ -157,25 +193,34 @@ class VoiceCommandHandler(private val context: Context) {
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
                 SpeechRecognizer.ERROR_NETWORK -> "Network error"
                 SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-                SpeechRecognizer.ERROR_NO_MATCH -> "No speech match"
+                SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
                 SpeechRecognizer.ERROR_SERVER -> "Server error"
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout"
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech detected"
                 else -> "Unknown error: $error"
             }
-            Log.e(TAG, "Recognition error: $errorMessage")
             _isListening.value = false
 
-            val result = VoiceResult.Error(errorMessage)
-            _lastResult.value = result
-            onResult?.invoke(result)
+            // NO_MATCH and SPEECH_TIMEOUT are normal — user just didn't speak (in time)
+            // Treat them as empty text result instead of error
+            if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                Log.i(TAG, ">>> No speech detected (error $error) — treating as empty result")
+                val result = VoiceResult.Text("")
+                _lastResult.value = result
+                onResult?.invoke(result)
+            } else {
+                Log.e(TAG, ">>> Recognition error ($error): $errorMessage")
+                val result = VoiceResult.Error(errorMessage)
+                _lastResult.value = result
+                onResult?.invoke(result)
+            }
         }
 
         override fun onResults(results: Bundle?) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val spokenText = matches?.firstOrNull() ?: ""
 
-            Log.d(TAG, "Recognition result: $spokenText")
+            Log.i(TAG, ">>> Final recognition result: '$spokenText'")
 
             val processedResult = processSpokenText(spokenText)
             _lastResult.value = processedResult
@@ -184,7 +229,11 @@ class VoiceCommandHandler(private val context: Context) {
 
         override fun onPartialResults(partialResults: Bundle?) {
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            Log.d(TAG, "Partial: ${matches?.firstOrNull()}")
+            val partialText = matches?.firstOrNull() ?: ""
+            if (partialText.isNotEmpty()) {
+                Log.d(TAG, "Partial: $partialText")
+                onPartialResult?.invoke(partialText)
+            }
         }
 
         override fun onEvent(eventType: Int, params: Bundle?) {}

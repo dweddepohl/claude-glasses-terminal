@@ -13,8 +13,7 @@
     <!-- Camera for screenshots -->
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- Audio for voice input (if processing on glasses) -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Audio: voice recognition is handled on the phone, not the glasses -->
 
     <!-- Keep display active -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
