@@ -41,6 +41,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import android.content.Context
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
@@ -105,11 +106,20 @@ fun MainScreen() {
         }
     }
 
-    // Auto-enable debug mode in debug builds for emulator testing
-    LaunchedEffect(Unit) {
-        if (com.claudeglasses.phone.BuildConfig.DEBUG) {
-            android.util.Log.i("MainScreen", "Debug build detected - auto-enabling debug mode for glasses connection")
-            glassesManager.enableDebugMode()
+    // Debug mode is off by default — user can enable in settings if needed
+
+    // Start/stop foreground service based on glasses connection state
+    LaunchedEffect(glassesState) {
+        when (glassesState) {
+            is GlassesConnectionManager.ConnectionState.Connected -> {
+                android.util.Log.i("MainScreen", "Glasses connected — starting foreground service")
+                com.claudeglasses.phone.service.GlassesConnectionService.start(context)
+            }
+            is GlassesConnectionManager.ConnectionState.Disconnected -> {
+                android.util.Log.i("MainScreen", "Glasses disconnected — stopping foreground service")
+                com.claudeglasses.phone.service.GlassesConnectionService.stop(context)
+            }
+            else -> {}
         }
     }
 
@@ -867,16 +877,15 @@ fun SettingsDialog(
                     }
 
                     // ============== Installation Section ==============
-                    Text(
-                        "Glasses App Installation",
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Spacer(Modifier.height(8.dp))
-
-                    // Show SDK install option if connected via Bluetooth
                     if (sdkConnected) {
                         Text(
-                            "Install via Bluetooth + WiFi P2P (no ADB needed)",
+                            "Glasses App Installation",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        Text(
+                            "Install via Bluetooth + WiFi P2P",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
@@ -895,125 +904,15 @@ fun SettingsDialog(
                         }
 
                         Spacer(Modifier.height(16.dp))
-                        Text(
-                            "Or use ADB (requires WiFi on glasses):",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    }
 
-                    // ADB Installation (fallback)
-                    OutlinedTextField(
-                        value = glassesIp,
-                        onValueChange = {
-                            glassesIp = it
-                            connectionTestResult = null
-                        },
-                        label = { Text("Glasses IP Address (for ADB)") },
-                        placeholder = { Text("e.g., 192.168.1.100") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        trailingIcon = {
-                            if (isTestingConnection) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            }
-                        }
-                    )
-
-                    // Connection test result
-                    connectionTestResult?.let { result ->
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            result,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (result.startsWith("Connected")) Color(0xFF4CAF50) else Color(0xFFF44336)
+                        // Installation status
+                        InstallationSection(
+                            installState = installState,
+                            onCancel = onCancelInstall,
+                            onOpenApp = onOpenGlassesApp,
+                            onRetry = { apkInstaller.installViaSdk() }
                         )
                     }
-
-                    Spacer(Modifier.height(8.dp))
-
-                    // Test Connection button
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                if (glassesIp.isNotBlank()) {
-                                    isTestingConnection = true
-                                    connectionTestResult = null
-                                    apkInstaller.testAdbConnection(glassesIp.trim()) { success, message ->
-                                        isTestingConnection = false
-                                        connectionTestResult = message
-                                        if (success) {
-                                            apkInstaller.configureAdb(glassesIp.trim())
-                                        }
-                                    }
-                                }
-                            },
-                            enabled = glassesIp.isNotBlank() && !isTestingConnection,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Test")
-                        }
-
-                        Button(
-                            onClick = {
-                                if (glassesIp.isNotBlank()) {
-                                    apkInstaller.configureAdb(glassesIp.trim())
-                                    apkInstaller.installViaAdb()
-                                } else {
-                                    apkInstaller.installGlassesApp()
-                                }
-                            },
-                            enabled = (installState is ApkInstaller.InstallState.Idle ||
-                                     installState is ApkInstaller.InstallState.Error ||
-                                     installState is ApkInstaller.InstallState.Success) &&
-                                     glassesIp.isNotBlank(),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("ADB Install")
-                        }
-                    }
-
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "ADB requires: Developer Options + USB debugging + same WiFi",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
-                    )
-
-                    Spacer(Modifier.height(16.dp))
-
-                    // Installation status
-                    InstallationSection(
-                        installState = installState,
-                        onCancel = onCancelInstall,
-                        onOpenApp = {
-                            if (glassesIp.isNotBlank()) {
-                                apkInstaller.configureAdb(glassesIp.trim())
-                            }
-                            onOpenGlassesApp()
-                        },
-                        onRetry = {
-                            if (sdkConnected) {
-                                apkInstaller.installViaSdk()
-                            } else if (glassesIp.isNotBlank()) {
-                                apkInstaller.configureAdb(glassesIp.trim())
-                                apkInstaller.installViaAdb()
-                            } else {
-                                apkInstaller.installGlassesApp()
-                            }
-                        }
-                    )
                 }
             }
         },

@@ -25,8 +25,11 @@
     <!-- Audio for voice commands -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Keep screen on during terminal sessions -->
+    <!-- Keep app alive when screen off -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
@@ -54,7 +57,7 @@
         <service
             android:name=".service.GlassesConnectionService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|microphone" />
 
     </application>
 

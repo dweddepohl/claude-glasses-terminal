@@ -315,7 +315,7 @@ fun HudScreen(
     val inputFocused = state.focusedArea == FocusArea.INPUT
     val commandFocused = state.focusedArea == FocusArea.COMMAND
 
-    val contentAlpha = focusBrightness(contentFocused, isPulsing = isAreaSelectLevel)
+    val contentAlpha = focusBrightness(contentFocused, isPulsing = false)
     val inputAlpha = focusBrightness(inputFocused, isPulsing = isAreaSelectLevel)
     val commandAlpha = focusBrightness(commandFocused, isPulsing = isAreaSelectLevel)
 

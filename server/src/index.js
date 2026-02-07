@@ -97,9 +97,17 @@ class ClaudeTerminalServer {
     this.tempDir = mkdtempSync(join(tmpdir(), 'claude-glasses-'));
     this.pollInterval = null;
     this.lastOutput = '';
+    // Last sent to clients (for delta computation)
+    this.lastSentLines = [];
+    this.lastSentColors = [];
     this.cols = DEFAULT_COLS;
     this.rows = DEFAULT_ROWS;
     this.sessionName = DEFAULT_SESSION_NAME;
+    // Throttle: pending latest state to send
+    this.pendingLines = null;
+    this.pendingColors = null;
+    this.broadcastTimer = null;
+    this.MIN_BROADCAST_INTERVAL = 50; // ms between broadcasts
   }
 
   start() {
@@ -239,6 +247,8 @@ class ClaudeTerminalServer {
     this.sessionName = name;
     this.lastOutput = '';  // Force refresh
     this.outputBuffer = [];
+    this.lastSentLines = [];
+    this.lastSentColors = [];
 
     if (!this.sessionExists(name)) {
       // Create new session
@@ -289,10 +299,11 @@ class ClaudeTerminalServer {
   }
 
   startOutputPolling() {
-    // Poll tmux for output every 100ms
+    // Poll tmux for output every 200ms
+    if (this.pollInterval) clearInterval(this.pollInterval);
     this.pollInterval = setInterval(() => {
       this.captureOutput();
-    }, 100);
+    }, 200);
   }
 
   captureOutput() {
@@ -303,59 +314,99 @@ class ClaudeTerminalServer {
         { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
       );
 
-      // Only broadcast if output changed
-      if (output !== this.lastOutput) {
-        this.lastOutput = output;
+      // Quick check: skip if raw output is identical
+      if (output === this.lastOutput) return;
+      this.lastOutput = output;
 
-        // Split into raw lines (with ANSI) for color detection
-        const rawLines = output.split('\n');
+      // Split into raw lines (with ANSI) for color detection
+      const rawLines = output.split('\n');
 
-        // Debug: log first few lines with escape sequences
-        const linesWithAnsi = rawLines.filter(l => l.includes('\x1b') || l.includes('\u001b'));
-        if (linesWithAnsi.length > 0) {
-          console.log(`Found ${linesWithAnsi.length} lines with ANSI codes`);
-          console.log('Sample:', JSON.stringify(linesWithAnsi[0].substring(0, 100)));
-        }
+      // Extract color type for each line BEFORE stripping ANSI
+      const lineColors = rawLines.map(line => getLineColorType(line));
 
-        // Extract color type for each line BEFORE stripping ANSI
-        const lineColors = rawLines.map(line => getLineColorType(line));
+      // Strip ANSI codes for display text
+      const cleanedOutput = stripAnsi(output);
+      const lines = cleanedOutput.split('\n');
 
-        // Strip ANSI codes for display text
-        const cleanedOutput = stripAnsi(output);
-        const lines = cleanedOutput.split('\n');
+      // Remove trailing empty lines but keep structure
+      let trimmedLines = [...lines];
+      let trimmedColors = [...lineColors];
+      while (trimmedLines.length > 0 && trimmedLines[trimmedLines.length - 1].trim() === '') {
+        trimmedLines.pop();
+        trimmedColors.pop();
+      }
 
-        // Update buffer
-        this.outputBuffer = lines;
+      // Update buffer
+      this.outputBuffer = lines;
 
-        // Debug: log when broadcasting
-        const nonEmptyCount = lines.filter(l => l.trim().length > 0).length;
-        const coloredCount = lineColors.filter(c => c !== null).length;
-        console.log(`Broadcasting ${lines.length} lines (${nonEmptyCount} non-empty, ${coloredCount} colored) to ${this.clients.size} clients`);
+      // Store latest state for throttled send
+      this.pendingLines = trimmedLines;
+      this.pendingColors = trimmedColors;
 
-        // Remove trailing empty lines but keep structure
-        let trimmedLines = [...lines];
-        let trimmedColors = [...lineColors];
-        while (trimmedLines.length > 0 && trimmedLines[trimmedLines.length - 1].trim() === '') {
-          trimmedLines.pop();
-          trimmedColors.pop();
-        }
-
-        // Send all content with color info (app will handle scrolling)
-        this.broadcast({
-          type: 'output',
-          data: cleanedOutput,
-          lines: trimmedLines,
-          lineColors: trimmedColors,  // 'addition', 'deletion', 'header', or null
-          totalLines: trimmedLines.length
-        });
+      // Throttle: schedule a send if not already scheduled
+      if (!this.broadcastTimer) {
+        this.broadcastTimer = setTimeout(() => {
+          this.broadcastTimer = null;
+          this.flushPending();
+        }, this.MIN_BROADCAST_INTERVAL);
       }
     } catch (e) {
       // Session might have ended
-      console.error('Capture error:', e.message);
       if (e.message.includes('no server running') || e.message.includes("can't find")) {
         console.log('tmux session ended, restarting...');
         this.setupTmux();
       }
+    }
+  }
+
+  /**
+   * Flush pending state: compute delta against last sent, then broadcast.
+   */
+  flushPending() {
+    const lines = this.pendingLines;
+    const colors = this.pendingColors;
+    if (!lines) return;
+    this.pendingLines = null;
+    this.pendingColors = null;
+
+    // Compute delta against last SENT state
+    const changedIndices = [];
+    const maxLen = Math.max(lines.length, this.lastSentLines.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (lines[i] !== this.lastSentLines[i] || colors[i] !== this.lastSentColors[i]) {
+        changedIndices.push(i);
+      }
+    }
+
+    // Nothing changed since last send
+    if (changedIndices.length === 0) return;
+
+    // Update last sent state
+    this.lastSentLines = lines;
+    this.lastSentColors = colors;
+
+    // If more than half the lines changed, send full update
+    if (changedIndices.length > lines.length * 0.5) {
+      this.broadcast({
+        type: 'output',
+        lines: lines,
+        lineColors: colors,
+        totalLines: lines.length
+      });
+    } else {
+      // Send delta: only the changed lines
+      const changedLines = {};
+      const changedColors = {};
+      for (const i of changedIndices) {
+        changedLines[i] = lines[i] || '';
+        changedColors[i] = colors[i] || null;
+      }
+      this.broadcast({
+        type: 'output_delta',
+        changedLines,
+        changedColors,
+        totalLines: lines.length
+      });
     }
   }
 

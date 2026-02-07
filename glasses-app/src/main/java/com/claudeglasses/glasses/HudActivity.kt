@@ -1223,6 +1223,83 @@ class HudActivity : ComponentActivity() {
 
                     Log.d(GlassesApp.TAG, "Terminal update: ${lines.size} lines, content=${contentLineCount}, inputSection=${inputSection.lines.size} lines, autoScroll=$shouldAutoScroll")
                 }
+                "output_delta" -> {
+                    // Delta update: only changed lines from server
+                    val changedLines = msg.optJSONObject("changedLines")
+                    val changedColors = msg.optJSONObject("changedColors")
+                    val totalLines = msg.optInt("totalLines", 0)
+
+                    if (changedLines != null) {
+                        val current = terminalState.value
+                        val newLines = current.lines.toMutableList()
+                        val newColors = current.lineColors.toMutableList()
+
+                        // Resize to match server
+                        while (newLines.size < totalLines) {
+                            newLines.add("")
+                            newColors.add(LineColorType.NORMAL)
+                        }
+                        while (newLines.size > totalLines) {
+                            newLines.removeAt(newLines.size - 1)
+                            newColors.removeAt(newColors.size - 1)
+                        }
+
+                        // Apply changes
+                        val keys = changedLines.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            val idx = key.toIntOrNull() ?: continue
+                            if (idx in 0 until newLines.size) {
+                                newLines[idx] = changedLines.optString(key, "")
+                            }
+                        }
+                        if (changedColors != null) {
+                            val colorKeys = changedColors.keys()
+                            while (colorKeys.hasNext()) {
+                                val key = colorKeys.next()
+                                val idx = key.toIntOrNull() ?: continue
+                                if (idx in 0 until newColors.size) {
+                                    newColors[idx] = when (changedColors.optString(key, "")) {
+                                        "addition" -> LineColorType.ADDITION
+                                        "deletion" -> LineColorType.DELETION
+                                        "header" -> LineColorType.HEADER
+                                        else -> LineColorType.NORMAL
+                                    }
+                                }
+                            }
+                        }
+
+                        val inputSection = detectInputSection(newLines, newColors)
+                        val detectedPrompt = parsePrompt(newLines)
+                        val promptLineIndex = newLines.indexOfLast { line ->
+                            line.trimStart().startsWith("❯") || line.contains("❯")
+                        }
+                        val contentLineCount = if (inputSection.startIndex >= 0) inputSection.startIndex else newLines.size
+                        val previousContentCount = if (current.inputSection.startIndex >= 0) current.inputSection.startIndex else current.lines.size
+                        val lineCountIncreased = contentLineCount > previousContentCount
+                        val userIsScrolling = current.focus.focusedArea == FocusArea.CONTENT &&
+                                              current.focus.level == FocusLevel.AREA_FOCUSED
+                        val shouldAutoScroll = lineCountIncreased && !userIsScrolling
+                        val newScrollPosition = if (shouldAutoScroll) {
+                            maxOf(0, contentLineCount - 1)
+                        } else {
+                            current.scrollPosition.coerceIn(0, maxOf(0, contentLineCount - 1))
+                        }
+                        val newScrollTrigger = if (shouldAutoScroll) current.scrollTrigger + 1 else current.scrollTrigger
+
+                        terminalState.value = current.copy(
+                            lines = newLines,
+                            lineColors = newColors,
+                            cursorLine = 0,
+                            promptLineIndex = promptLineIndex,
+                            inputSection = inputSection,
+                            scrollPosition = newScrollPosition,
+                            scrollTrigger = newScrollTrigger,
+                            isConnected = true,
+                            detectedPrompt = detectedPrompt
+                        )
+                    }
+                }
                 "sessions" -> {
                     // Session list from server
                     val sessionsArray = msg.optJSONArray("sessions")

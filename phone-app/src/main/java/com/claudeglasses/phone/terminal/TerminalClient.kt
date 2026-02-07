@@ -108,35 +108,49 @@ class TerminalClient {
 
             when (type) {
                 "output", "terminal_update" -> {
-                    // Server sends lines array with terminal content
+                    // Full update: server sends complete lines array
                     val linesArray = msg.optJSONArray("lines")
                     if (linesArray != null) {
                         val newLines = mutableListOf<TerminalLine>()
                         for (i in 0 until linesArray.length()) {
                             val line = linesArray.optString(i, "")
-                            // Keep all lines including empty ones to preserve terminal structure
                             newLines.add(TerminalLine(line, TerminalLine.Type.OUTPUT))
                         }
-                        // Only update if we have content (avoid blank flash)
                         if (newLines.any { it.content.isNotBlank() }) {
                             _terminalLines.value = newLines
-                            Log.d(TAG, "Updated terminal with ${newLines.size} lines")
                         }
                     }
 
                     // Forward raw message to glasses (includes lineColors)
                     onTerminalOutput?.invoke(json)
-
-                    // Also handle raw data field if present
-                    val data = msg.optString("data", "")
-                    if (data.isNotEmpty() && msg.optJSONArray("lines") == null) {
-                        val lines = data.split("\n").map {
-                            TerminalLine(it, TerminalLine.Type.OUTPUT)
+                }
+                "output_delta" -> {
+                    // Delta update: server sends only changed lines
+                    val changedLines = msg.optJSONObject("changedLines")
+                    val totalLines = msg.optInt("totalLines", 0)
+                    if (changedLines != null) {
+                        val currentLines = _terminalLines.value.toMutableList()
+                        // Ensure list is large enough
+                        while (currentLines.size < totalLines) {
+                            currentLines.add(TerminalLine("", TerminalLine.Type.OUTPUT))
                         }
-                        if (lines.any { it.content.isNotBlank() }) {
-                            _terminalLines.value = lines
+                        // Trim if server has fewer lines now
+                        while (currentLines.size > totalLines) {
+                            currentLines.removeAt(currentLines.size - 1)
                         }
+                        // Apply changed lines
+                        val keys = changedLines.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            val idx = key.toIntOrNull() ?: continue
+                            if (idx in 0 until currentLines.size) {
+                                currentLines[idx] = TerminalLine(changedLines.optString(key, ""), TerminalLine.Type.OUTPUT)
+                            }
+                        }
+                        _terminalLines.value = currentLines
                     }
+                    // Forward to glasses
+                    onTerminalOutput?.invoke(json)
                 }
                 "sessions", "session_switched" -> {
                     // Forward session messages to glasses
