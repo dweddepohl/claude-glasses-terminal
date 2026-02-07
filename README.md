@@ -1,8 +1,6 @@
-# Claude Glasses - Claude Code for Rokid AI Glasses 👾x🕶️
+# Claude Glasses Terminal
 
-A terminal interface for Claude Code on Rokid Glasses. View and interact with Claude Code through your AR glasses using voice commands and gestures.
-
-NOTE: This is an emulated prototype and has not been tested on the actual glasses yet.
+A wearable terminal interface for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on [Rokid AR Lite](https://www.rokid.com/en/product/ar-lite/) glasses. View and interact with Claude Code through AR glasses using voice commands and touchpad gestures.
 
 ## See Claude Code While You Work
 
@@ -14,7 +12,7 @@ Imagine reviewing code changes while standing at a whiteboard, or dictating a da
   <img src="docs/images/Screenshot_20260111_154026.png" width="320" alt="Session selector showing multiple Claude Code sessions">
 </p>
 
-Switch between different Claude Code sessions on the fly. Each project gets its own persistent session - navigate between them with swipes, select with a tap.
+Switch between different Claude Code sessions on the fly. Each project gets its own persistent tmux session — navigate between them with swipes, select with a tap.
 
 ### Voice-First Input
 
@@ -22,7 +20,7 @@ Switch between different Claude Code sessions on the fly. Each project gets its 
   <img src="docs/images/Screenshot_20260111_154323.png" width="320" alt="Voice input showing natural language command">
 </p>
 
-No keyboard needed. Hold the touchpad and speak naturally: *"Connect to our database and find out how many transactions we did today"*. Your voice becomes the prompt.
+Long-press the glasses side button and speak naturally. Voice recognition uses the glasses' 4-mic array via Bluetooth SCO, and works even when the phone screen is off (via foreground service).
 
 ### Review Code Hands-Free
 
@@ -30,11 +28,11 @@ No keyboard needed. Hold the touchpad and speak naturally: *"Connect to our data
   <img src="docs/images/Screenshot_20260111_154114.png" width="320" alt="Code diff view showing Claude's changes">
 </p>
 
-Scroll through diffs, read Claude's explanations, and navigate the terminal - all with simple gestures on the temple touchpad. The monochrome green display blends into your environment while keeping the code visible.
+Scroll through diffs, read Claude's explanations, and navigate the terminal — all with simple gestures on the temple touchpad. The monochrome green display blends into your environment while keeping the code visible.
 
 ### Bootstrapped
 
-Wonder if you can really build something with just gestures and voice? This project is the answer. Claude Glasses was used to build Claude Glasses!
+This project was built using itself. Claude Glasses was used to build Claude Glasses.
 
 ## Architecture
 
@@ -45,7 +43,8 @@ Wonder if you can really build something with just gestures and voice? This proj
 │  │           server/ (Node.js)                     │    │
 │  │  • Runs Claude Code in tmux session             │    │
 │  │  • WebSocket endpoint for phone connection      │    │
-│  │  • Handles terminal I/O                         │    │
+│  │  • Delta terminal updates (only changed lines)  │    │
+│  │  • Multi-session management                     │    │
 │  └─────────────────────────────────────────────────┘    │
 └──────────────────────────┬──────────────────────────────┘
                            │ WebSocket
@@ -53,9 +52,10 @@ Wonder if you can really build something with just gestures and voice? This proj
 │                      PHONE                              │
 │  ┌─────────────────────────────────────────────────┐    │
 │  │           phone-app/ (Android)                  │    │
-│  │  • CXR-M SDK for glasses communication          │    │
+│  │  • CXR-M SDK for glasses communication         │    │
 │  │  • WebSocket client to server                   │    │
-│  │  • Voice recognition (speech → text)            │    │
+│  │  • Voice recognition via glasses mic array      │    │
+│  │  • Foreground service for background operation  │    │
 │  │  • Bridges server ↔ glasses                     │    │
 │  └─────────────────────────────────────────────────┘    │
 └──────────────────────────┬──────────────────────────────┘
@@ -64,10 +64,10 @@ Wonder if you can really build something with just gestures and voice? This proj
 │                     GLASSES                             │
 │  ┌─────────────────────────────────────────────────┐    │
 │  │           glasses-app/ (Android)                │    │
-│  │  • CXR-S SDK for phone communication            │    │
-│  │  • HUD display (optimized for monochrome)       │    │
-│  │  • Gesture input (touchpad)                     │    │
-│  │  • Camera capture for screenshots               │    │
+│  │  • CXR-S SDK for phone communication           │    │
+│  │  • HUD display (monochrome green, 480×640)      │    │
+│  │  • Touchpad gesture input (3 modes)             │    │
+│  │  • AI scene button triggers voice input         │    │
 │  └─────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -81,17 +81,17 @@ claude-glasses-terminal/
 │       ├── glasses/        # Glasses connection management
 │       ├── terminal/       # WebSocket terminal client
 │       ├── voice/          # Voice command handling
+│       ├── service/        # Foreground service
 │       └── ui/             # Jetpack Compose UI
 │
 ├── glasses-app/            # Android app for glasses (CXR-S SDK)
 │   └── src/main/java/com/claudeglasses/glasses/
 │       ├── ui/             # HUD display components
 │       ├── input/          # Gesture handling
-│       └── service/        # Phone connection service
+│       ├── service/        # Phone connection service
+│       └── debug/          # Emulator WebSocket client
 │
 ├── shared/                 # Shared protocol definitions
-│   └── src/main/java/com/claudeglasses/shared/
-│       └── Protocol.kt     # Message types and serialization
 │
 └── server/                 # Node.js WebSocket server
     └── src/
@@ -106,8 +106,8 @@ claude-glasses-terminal/
 - Node.js 18+
 - tmux (`brew install tmux` on macOS)
 - Claude Code CLI installed and configured
-- Rokid Glasses with YodaOS-Sprite
-- Rokid developer account (for CXR SDK access)
+- Rokid AR Lite glasses (RV101, YodaOS-Sprite)
+- Rokid developer account (for CXR SDK credentials)
 
 ### 1. Server Setup
 
@@ -117,22 +117,31 @@ npm install
 npm start
 ```
 
-The server will start on port 8080 with a 65×15 terminal (optimized for glasses HUD). Use Tailscale or another VPN to expose it to your phone on the go.
+The server starts on port 8080 with a 64-column terminal optimized for the glasses HUD. Use Tailscale or another VPN to expose it to your phone on the go.
 
-### 2. Phone App
+### 2. SDK Credentials
+
+Add your Rokid CXR-M SDK credentials to `local.properties`:
+
+```properties
+rokid.clientId=xxx
+rokid.clientSecret=xxx
+rokid.accessKey=xxx
+```
+
+### 3. Phone App
 
 1. Open the project in Android Studio
-2. Add your Rokid CXR-M SDK credentials
-3. Build and install `phone-app` on your Android phone
-4. Configure the server URL in settings
+2. Build and install `phone-app` on your Android phone
+3. Configure the server URL in the app
 
-### 3. Glasses App
+### 4. Glasses App
 
 Using CXR-M SDK from your phone app:
 1. Build the `glasses-app` APK
 2. Use the phone app to push the APK to your glasses over WiFi
 
-Or with ADB debug cable (requires developer program):
+Or via ADB (requires Rokid developer cable):
 ```bash
 adb install glasses-app/build/outputs/apk/debug/glasses-app-debug.apk
 ```
@@ -141,19 +150,21 @@ adb install glasses-app/build/outputs/apk/debug/glasses-app-debug.apk
 
 ### Gesture Controls
 
-The temple touchpad has two swipe directions: **forward** (towards eyes) and **backward** (towards ear).
+The temple touchpad supports three modes, cycled via double-tap:
 
-| Mode | Forward/Backward | Tap | Double-Tap | Long Press |
-|------|------------------|-----|------------|------------|
-| **SCROLL** | Scroll up/down | Jump to end | Switch mode | Voice |
-| **NAVIGATE** | Arrow ↑↓ | Enter | Switch mode | Voice |
-| **COMMAND** | Tab / Escape | Shift-Tab | Switch mode | Voice |
+| Mode | Forward/Backward Swipe | Tap | Double-Tap | Long Press |
+|------|------------------------|-----|------------|------------|
+| **SCROLL** | Scroll up/down | Jump to end | Switch mode | Voice input |
+| **NAVIGATE** | Arrow up/down | Enter | Switch mode | Voice input |
+| **COMMAND** | Tab / Escape | Shift-Tab | Switch mode | Voice input |
 
-- **Forward swipe**: Scroll up / Arrow up / Tab (depending on mode)
-- **Backward swipe**: Scroll down / Arrow down / Escape (depending on mode)
-- **Hardware Back button**: Escape
+**Swipe directions:**
+- Forward (towards eyes) = scroll up / arrow up / tab
+- Backward (towards ear) = scroll down / arrow down / escape
 
-### Voice Commands
+### Voice Input
+
+Long-press the glasses side button to activate voice recognition. Speak naturally — your speech is sent as a prompt to Claude Code. Special commands:
 
 | Say | Action |
 |-----|--------|
@@ -161,94 +172,47 @@ The temple touchpad has two swipe directions: **forward** (towards eyes) and **b
 | "slash compact" | Types `/compact` |
 | "escape" | Sends ESC key |
 | "scroll up/down" | Scrolls terminal |
-| "take screenshot" | Captures and sends image |
+| "take screenshot" | Captures and sends glasses camera image |
+| *(anything else)* | Sent as text input to Claude Code |
 
 ### Hardware Buttons
 
-- Volume Up: Scroll up
-- Volume Down: Scroll down
+- Volume Up/Down: Scroll up/down
 - Back: ESC
 
-## HUD Display
+## Display
 
-The glasses display is optimized for the Rokid AR Lite (49g green waveguide) 640×480 pixel display:
-- Pure black background (blends with real world on monochrome display)
-- Neon green/cyan text (high visibility)
-- JetBrains Mono font for proper box-drawing character alignment
-- Dynamic font scaling to fit 65 columns without wrapping
-- ~65 characters × 15 lines visible
+The glasses use JBD 0.13" micro LED displays (per eye):
+- Resolution: **480×640** (portrait mode)
+- Pixel density: ~6,150 DPI
+- Monochrome green, 1500 nits
+- Terminal: **64 columns × 31 rows**
+- Pure black background (transparent on AR waveguide)
+- JetBrains Mono font for box-drawing characters
 
-## Emulator Testing (Debug Mode)
+## Emulator Testing
 
-For development without physical glasses, you can test using two Android emulators:
+For development without physical glasses, debug builds use WebSocket instead of Bluetooth:
 
-### Setup
-
-1. **Create a glasses emulator** with these specs to match Rokid display:
-   - Resolution: 640×480
-   - Screen size: 5.0 inches (gives 160 dpi, so 1dp = 1px)
-
-2. **Start the phone emulator** first, then the glasses emulator
-
-3. **Debug mode** is enabled automatically in debug builds:
-   - Phone app starts a WebSocket server on port 8081
-   - Glasses app connects to `10.0.2.2:8081` (host machine from emulator)
-
-### Running
+1. **Create a glasses emulator**: 480×640, 5.0" screen
+2. **Phone emulator** starts a WebSocket server on port 8081
+3. **Glasses emulator** connects to `10.0.2.2:8081`
 
 ```bash
 # Terminal 1: Start the server
 cd server && npm start
 
-# Terminal 2: Run phone app on first emulator
+# Terminal 2: Run phone app
 ./gradlew :phone-app:installDebug
 
-# Terminal 3: Run glasses app on second emulator
+# Terminal 3: Run glasses app
 ./gradlew :glasses-app:installDebug
-```
-
-The glasses emulator will connect to the phone emulator via WebSocket, bypassing Bluetooth.
-
-## Development
-
-### Building
-
-```bash
-# Build all Android modules
-./gradlew assembleDebug
-
-# Build phone app only
-./gradlew :phone-app:assembleDebug
-
-# Build glasses app only
-./gradlew :glasses-app:assembleDebug
-```
-
-### SDK Setup
-
-Add to your Rokid developer credentials:
-
-```kotlin
-// In phone-app or glasses-app build.gradle.kts
-repositories {
-    maven { url = uri("https://maven.rokid.com/repository/maven-public/") }
-}
 ```
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) - Development context and guidelines for Claude Code
-- [docs/ROKID.md](docs/ROKID.md) - Rokid hardware specs, SDK reference, and resources
-
-## TODO
-
-- [ ] Integrate actual CXR-M/CXR-S SDK (currently placeholder)
-- [ ] Add proper ANSI code parsing for syntax highlighting
-- [ ] Implement camera capture on glasses
-- [ ] Add haptic feedback for gestures
-- [ ] Support for Claude's streaming responses
-- [ ] Offline mode with cached context
-- [ ] Voice command integration
+- [CLAUDE.md](CLAUDE.md) - Development context and guidelines
+- [docs/ROKID.md](docs/ROKID.md) - Rokid hardware specs and SDK reference
 
 ## License
 
