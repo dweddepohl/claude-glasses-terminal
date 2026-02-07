@@ -56,6 +56,7 @@ class TerminalClient {
 
     fun connect(url: String) {
         serverUrl = url
+        Log.i(TAG, "Connecting to WebSocket server: $url")
         _connectionState.value = ConnectionState.Connecting
 
         val request = Request.Builder()
@@ -64,7 +65,7 @@ class TerminalClient {
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "WebSocket connected to $url")
+                Log.i(TAG, "WebSocket connected to $url (HTTP ${response.code})")
                 _connectionState.value = ConnectionState.Connected
             }
 
@@ -88,8 +89,11 @@ class TerminalClient {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket error", t)
-                _connectionState.value = ConnectionState.Error(t.message ?: "Unknown error")
+                Log.e(TAG, "WebSocket connection FAILED to $url: ${t.javaClass.simpleName}: ${t.message}", t)
+                if (response != null) {
+                    Log.e(TAG, "HTTP response: ${response.code} ${response.message}")
+                }
+                _connectionState.value = ConnectionState.Error("${t.javaClass.simpleName}: ${t.message}")
                 scheduleReconnect()
             }
         })

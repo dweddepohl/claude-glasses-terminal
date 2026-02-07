@@ -39,18 +39,32 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
+import android.os.Build
 import com.claudeglasses.glasses.BuildConfig
 
 class HudActivity : ComponentActivity() {
 
     companion object {
-        // Enable debug mode for emulator testing (set to true when building for emulator)
-        // When true, connects via WebSocket to phone app instead of Bluetooth
-        val DEBUG_MODE = BuildConfig.DEBUG
+        // Enable debug mode only on actual emulators (not debug builds on real hardware).
+        // Emulators use generic hardware identifiers like "goldfish", "ranchu", "sdk_gphone".
+        val DEBUG_MODE = BuildConfig.DEBUG && isEmulator()
 
         // Debug connection settings (10.0.2.2 is host from Android emulator)
         const val DEBUG_HOST = "10.0.2.2"
         const val DEBUG_PORT = 8081
+
+        private fun isEmulator(): Boolean {
+            return (Build.FINGERPRINT.contains("generic")
+                    || Build.FINGERPRINT.contains("emulator")
+                    || Build.MODEL.contains("Emulator")
+                    || Build.MODEL.contains("Android SDK built for")
+                    || Build.MODEL.contains("sdk_gphone")
+                    || Build.MANUFACTURER.contains("Genymotion")
+                    || Build.HARDWARE.contains("goldfish")
+                    || Build.HARDWARE.contains("ranchu")
+                    || Build.PRODUCT.contains("sdk")
+                    || Build.PRODUCT.contains("emulator"))
+        }
     }
 
     private val terminalState = MutableStateFlow(TerminalState())
@@ -184,41 +198,41 @@ class HudActivity : ComponentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        val keyName = KeyEvent.keyCodeToString(keyCode)
+        Log.d(GlassesApp.TAG, "onKeyDown: keyCode=$keyCode ($keyName), repeat=${event?.repeatCount}, source=0x${event?.source?.toString(16)}")
+
         // If capturing keyboard input for simulated voice, handle specially
         if (isCapturingKeyboardInput) {
             return handleKeyboardCapture(keyCode, event)
         }
 
-        // Handle hardware buttons on glasses and keyboard for emulator testing
+        // Ignore auto-repeat events for gesture detection
+        if (event?.repeatCount ?: 0 > 0) return true
+
+        // Rokid touchpad key mappings (hardware translates gestures to KeyEvents):
+        //   Tap         → KEYCODE_ENTER
+        //   Double-tap  → KEYCODE_BACK
+        //   Swipe fwd   → KEYCODE_DPAD_UP
+        //   Swipe back  → KEYCODE_DPAD_DOWN
         when (keyCode) {
-            // Forward swipe (towards eyes) - volume up or arrow up
-            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_DPAD_UP -> {
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_VOLUME_UP -> {
                 handleGesture(Gesture.SWIPE_FORWARD)
                 return true
             }
-            // Backward swipe (towards ear) - volume down or arrow down
-            KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_DPAD_DOWN -> {
+            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN -> {
                 handleGesture(Gesture.SWIPE_BACKWARD)
                 return true
             }
-            // Back button sends escape command directly
-            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
-                sendCommand("escape")
-                return true
-            }
-            // Keyboard shortcuts for emulator testing
-            KeyEvent.KEYCODE_V -> {
-                // V key toggles voice recognition
-                handleGesture(Gesture.LONG_PRESS)
-                return true
-            }
-            KeyEvent.KEYCODE_ENTER -> {
-                // Enter = tap (confirm)
+            KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_CENTER -> {
                 handleGesture(Gesture.TAP)
                 return true
             }
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                handleGesture(Gesture.DOUBLE_TAP)
+                return true
+            }
+            // Emulator shortcuts
             KeyEvent.KEYCODE_M, KeyEvent.KEYCODE_DEL -> {
-                // M or Backspace = double-tap (back/exit)
                 handleGesture(Gesture.DOUBLE_TAP)
                 return true
             }

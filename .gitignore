@@ -15,6 +15,7 @@ captures/
 # Phone app
 phone-app/build/
 phone-app/.cxx/
+phone-app/src/main/assets/glasses-app-release.apk
 
 # Glasses app
 glasses-app/build/

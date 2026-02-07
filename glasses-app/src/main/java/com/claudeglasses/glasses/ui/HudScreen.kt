@@ -868,7 +868,7 @@ private fun CommandBar(
     isFocused: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val commandFontSize = (displaySize.fontSizeSp - 2).coerceAtLeast(8).sp
+    val commandFontSize = (displaySize.fontSizeSp - 6).coerceAtLeast(6).sp
     val scrollState = rememberScrollState()
 
     // Mode indicator icon
@@ -1135,18 +1135,52 @@ private fun StatusBar(
 
         // Connection status
         Text(
-            text = if (isConnected) "●" else "○",
+            text = if (isConnected) "\u25CF" else "\u25CB",
             color = if (isConnected) HudColors.green else HudColors.dimText,
             fontSize = (statusFontSize.value + 2).sp
         )
 
-        // Line info
-        Text(
-            text = lineInfo,
-            color = HudColors.dimText,
-            fontSize = statusFontSize,
-            fontFamily = fontFamily
-        )
+        // Input hint icons + line info (right side)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Gesture hint icons: ↑↓ swipe, ↵ tap, ⌧ back
+            Text(
+                text = "\u2191\u2193",  // ↑↓
+                color = HudColors.dimText,
+                fontSize = statusFontSize,
+                fontFamily = fontFamily
+            )
+            Text(
+                text = "\u21B5",  // ↵
+                color = HudColors.dimText,
+                fontSize = statusFontSize,
+                fontFamily = fontFamily
+            )
+            Text(
+                text = "\u232B",  // ⌫
+                color = HudColors.dimText,
+                fontSize = statusFontSize,
+                fontFamily = fontFamily
+            )
+
+            // Separator
+            Text(
+                text = "\u2502",  // │
+                color = HudColors.dimText.copy(alpha = 0.4f),
+                fontSize = statusFontSize,
+                fontFamily = fontFamily
+            )
+
+            // Line info
+            Text(
+                text = lineInfo,
+                color = HudColors.dimText,
+                fontSize = statusFontSize,
+                fontFamily = fontFamily
+            )
+        }
     }
 }
 

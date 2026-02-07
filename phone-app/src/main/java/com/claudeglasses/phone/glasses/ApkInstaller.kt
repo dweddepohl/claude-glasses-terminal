@@ -1,7 +1,11 @@
 package com.claudeglasses.phone.glasses
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import dadb.Dadb
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,7 +44,7 @@ class ApkInstaller(private val context: Context) {
     }
 
     /**
-     * Installation state machine
+     * Installation state machineIt
      */
     sealed class InstallState {
         object Idle : InstallState()
@@ -253,9 +257,23 @@ class ApkInstaller(private val context: Context) {
             installError = "APK installation failed on glasses."
         }
 
-        // Step 3: Initialize WiFi P2P if not connected
+        // Step 3: Check WiFi P2P permission (Android 13+ requires NEARBY_WIFI_DEVICES)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPermission = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.NEARBY_WIFI_DEVICES
+            ) == PackageManager.PERMISSION_GRANTED
+            Log.i(TAG, "NEARBY_WIFI_DEVICES permission: ${if (hasPermission) "GRANTED" else "DENIED"}")
+            if (!hasPermission) {
+                throw Exception(
+                    "Missing 'Nearby devices' permission.\n\n" +
+                    "Go to Android Settings > Apps > Claude Glasses > Permissions > Nearby devices and enable it."
+                )
+            }
+        }
+
+        // Step 4: Initialize WiFi P2P if not connected
         if (!RokidSdkManager.isWifiP2PConnected()) {
-            Log.d(TAG, "Initializing WiFi P2P for APK transfer...")
+            Log.i(TAG, "Initializing WiFi P2P for APK transfer...")
             _installState.value = InstallState.InitializingWifiP2P
 
             if (!RokidSdkManager.initWifiP2P()) {
@@ -267,10 +285,17 @@ class ApkInstaller(private val context: Context) {
             while (!RokidSdkManager.isWifiP2PConnected() && waitTime < 30000) {
                 delay(500)
                 waitTime += 500
+                if (waitTime % 5000 == 0) {
+                    Log.i(TAG, "Still waiting for WiFi P2P... (${waitTime / 1000}s)")
+                }
             }
 
             if (!RokidSdkManager.isWifiP2PConnected()) {
-                throw Exception("WiFi P2P connection timed out. Try again.")
+                throw Exception(
+                    "WiFi P2P connection timed out.\n\n" +
+                    "Ensure WiFi is enabled on both phone and glasses. " +
+                    "You may need to grant 'Nearby devices' permission in Android Settings."
+                )
             }
         }
 

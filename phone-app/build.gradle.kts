@@ -6,7 +6,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Load Rokid credentials from local.properties
+// Load Rokid credentials from local.properties (needed for SN verification)
 val localProperties = Properties().apply {
     val localPropertiesFile = rootProject.file("local.properties")
     if (localPropertiesFile.exists()) {
@@ -27,8 +27,9 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Rokid SDK credentials
-        buildConfigField("String", "ROKID_CLIENT_ID", "\"${localProperties.getProperty("rokid.clientId", "")}\"")
+        // Rokid credentials for SN verification during Bluetooth connection
+        // clientSecret = AES key used to decrypt snEncryptContent (from .lc file)
+        // accessKey = rokidAccount identifier
         buildConfigField("String", "ROKID_CLIENT_SECRET", "\"${localProperties.getProperty("rokid.clientSecret", "")}\"")
         buildConfigField("String", "ROKID_ACCESS_KEY", "\"${localProperties.getProperty("rokid.accessKey", "")}\"")
     }
@@ -69,11 +70,24 @@ android {
     }
 }
 
+// Bundle glasses-app APK into phone-app assets so it can be installed via SDK/ADB
+// Builds glasses-app debug APK and copies it as "glasses-app-release.apk" in assets
+val bundleGlassesApk by tasks.registering(Copy::class) {
+    dependsOn(":glasses-app:assembleDebug")
+    from("${project(":glasses-app").buildDir}/outputs/apk/debug/glasses-app-debug.apk")
+    into("src/main/assets")
+    rename { "glasses-app-release.apk" }
+}
+
+tasks.named("preBuild") {
+    dependsOn(bundleGlassesApk)
+}
+
 dependencies {
     implementation(project(":shared"))
 
     // Rokid CXR-M SDK (Phone side)
-    implementation("com.rokid.cxr:client-m:1.0.4")
+    implementation("com.rokid.cxr:client-m:1.0.8")
 
     // Android Core
     implementation("androidx.core:core-ktx:1.12.0")
@@ -90,6 +104,7 @@ dependencies {
 
     // Networking for WebSocket/SSH
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
 

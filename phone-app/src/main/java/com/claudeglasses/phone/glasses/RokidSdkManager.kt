@@ -11,20 +11,25 @@ import com.rokid.cxr.client.extend.callbacks.BluetoothStatusCallback
 import com.rokid.cxr.client.extend.callbacks.WifiP2PStatusCallback
 import com.rokid.cxr.client.extend.listeners.CustomCmdListener
 import com.rokid.cxr.client.utils.ValueUtil
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Manages Rokid CXR-M SDK initialization and lifecycle.
  *
- * Uses credentials from BuildConfig (loaded from local.properties):
- * - ROKID_CLIENT_ID
- * - ROKID_CLIENT_SECRET
- * - ROKID_ACCESS_KEY
- *
  * Connection flow:
- * 1. initialize() - Set up SDK with credentials
- * 2. initBluetooth(device) - Establish Bluetooth control channel
- * 3. initWifiP2P() - Establish WiFi P2P data channel (for APK uploads)
- * 4. startUploadApk() - Upload and install APK via WiFi P2P
+ * 1. initialize(context) - Get CxrApi singleton, set up listeners
+ * 2. initBluetooth(device) - Start Bluetooth init with discovered device
+ *    -> callback.onConnectionInfo(socketUuid, macAddress, rokidAccount, glassesType)
+ * 3. connectBluetooth(socketUuid, macAddress) - Complete connection
+ *    -> callback.onConnected()
+ * 4. (Optional) initWifiP2P() - For APK uploads
+ *
+ * SN verification: The SDK performs an AES-encrypted serial number check after
+ * Bluetooth connects. On first attempt, SN_CHECK_FAILED is expected — we read
+ * the glasses SN from the SDK via reflection, generate the correct encrypted
+ * content, and reconnect automatically.
  */
 object RokidSdkManager {
 
@@ -44,14 +49,19 @@ object RokidSdkManager {
     private var savedRokidAccount: String? = null
     private var savedDeviceName: String? = null
 
-    // Authorization key (from .lc file) for device binding
-    private var authorizationKey: ByteArray? = null
+    // Track if we're in init phase (need to call connectBluetooth after getting info)
+    private var pendingConnect = false
+
+    // SN auto-generation: first attempt fails, we read the SN and retry
+    private var snAutoRetryInProgress = false
+    // Generated snEncryptContent for retry (stored after first SN_CHECK_FAILED)
+    private var generatedSnEncryptContent: ByteArray? = null
 
     // Callbacks for glasses events
     var onGlassesConnected: (() -> Unit)? = null
     var onGlassesDisconnected: (() -> Unit)? = null
     var onMessageFromGlasses: ((String, Caps?) -> Unit)? = null
-    var onConnectionInfo: ((name: String, mac: String, sn: String, type: Int) -> Unit)? = null
+    var onConnectionInfo: ((name: String, mac: String, account: String, type: Int) -> Unit)? = null
     var onBluetoothFailed: ((String) -> Unit)? = null
 
     // WiFi P2P callbacks
@@ -65,11 +75,7 @@ object RokidSdkManager {
     var onApkInstallSucceed: (() -> Unit)? = null
     var onApkInstallFailed: (() -> Unit)? = null
 
-    // Track if we're in init phase (need to call connectBluetooth after getting info)
-    private var pendingConnect = false
-
     private val bluetoothCallback = object : BluetoothStatusCallback {
-        // Parameters are: socketUuid, macAddress, rokidAccount, deviceType
         override fun onConnectionInfo(socketUuid: String?, macAddress: String?, rokidAccount: String?, deviceType: Int) {
             Log.i(TAG, "=== onConnectionInfo ===")
             Log.i(TAG, "  socketUuid=$socketUuid")
@@ -81,17 +87,28 @@ object RokidSdkManager {
             savedSocketUuid = socketUuid
             savedMacAddress = macAddress
             savedRokidAccount = rokidAccount
+            // Try to save device name from Bluetooth device
+            try {
+                val name = cxrApi?.let { api ->
+                    val glassInfoField = api.javaClass.getDeclaredField("I")
+                    glassInfoField.isAccessible = true
+                    val glassInfo = glassInfoField.get(api)
+                    glassInfo?.javaClass?.getMethod("getDeviceName")?.invoke(glassInfo) as? String
+                }
+                if (!name.isNullOrEmpty()) {
+                    savedDeviceName = name
+                    Log.i(TAG, "  deviceName=$name")
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Could not read device name from GlassInfo: ${e.message}")
+            }
             onConnectionInfo?.invoke(socketUuid ?: "", macAddress ?: "", rokidAccount ?: "", deviceType)
 
-            // After initBluetooth, we need to call connectBluetooth to complete connection
+            // After initBluetooth, call connectBluetooth to complete the connection
             if (pendingConnect && !socketUuid.isNullOrEmpty() && !macAddress.isNullOrEmpty()) {
                 Log.i(TAG, "Got connection info, now calling connectBluetooth...")
                 pendingConnect = false
-                // Try accessKey first (for device binding verification), fall back to callback value
-                val accessKey = BuildConfig.ROKID_ACCESS_KEY
-                val accountToUse = if (accessKey.isNotEmpty()) accessKey else (rokidAccount ?: "")
-                Log.i(TAG, "  Using rokidAccount: '${accountToUse.take(20)}...' (fromAccessKey=${accessKey.isNotEmpty()})")
-                connectBluetoothInternal(socketUuid, macAddress, rokidAccount = accountToUse)
+                connectBluetoothInternal(socketUuid, macAddress, rokidAccount ?: "")
             }
         }
 
@@ -99,6 +116,7 @@ object RokidSdkManager {
             Log.i(TAG, "=== onConnected === Bluetooth connected to glasses!")
             isBluetoothConnectedState = true
             pendingConnect = false
+            snAutoRetryInProgress = false
             onGlassesConnected?.invoke()
         }
 
@@ -112,27 +130,58 @@ object RokidSdkManager {
             Log.e(TAG, "=== onFailed === Bluetooth connection failed: $errorCode")
             isBluetoothConnectedState = false
             pendingConnect = false
+
+            // SN_CHECK_FAILED means BT connected but SN verification failed.
+            // Read the glasses SN from the SDK, generate encrypted content, and retry.
+            if (errorCode == ValueUtil.CxrBluetoothErrorCode.SN_CHECK_FAILED && !snAutoRetryInProgress) {
+                Log.i(TAG, "SN_CHECK_FAILED - attempting auto-recovery...")
+                val glassesSn = readGlassesSnFromSdk()
+                if (glassesSn != null && glassesSn.isNotEmpty()) {
+                    val clientSecret = BuildConfig.ROKID_CLIENT_SECRET.replace("-", "")
+                    val encrypted = generateSnEncryptContent(glassesSn, clientSecret)
+                    if (encrypted != null) {
+                        Log.i(TAG, "Generated snEncryptContent for SN=$glassesSn (${encrypted.size} bytes)")
+                        generatedSnEncryptContent = encrypted
+                        snAutoRetryInProgress = true
+                        // Retry connection with correct snEncryptContent
+                        val uuid = savedSocketUuid
+                        val mac = savedMacAddress
+                        if (!uuid.isNullOrEmpty() && !mac.isNullOrEmpty()) {
+                            Log.i(TAG, "Retrying connectBluetooth with generated snEncryptContent...")
+                            connectBluetoothInternal(uuid, mac, savedRokidAccount ?: "")
+                            return
+                        }
+                    }
+                }
+                Log.e(TAG, "SN auto-recovery failed - could not read glasses SN or generate encrypted content")
+            }
+
+            snAutoRetryInProgress = false
             onBluetoothFailed?.invoke(errorCode?.name ?: "Unknown error")
         }
     }
 
     private val wifiP2PCallback = object : WifiP2PStatusCallback {
         override fun onConnected() {
-            Log.d(TAG, "WiFi P2P connected")
+            Log.i(TAG, "=== WiFi P2P onConnected === WiFi P2P link established!")
             isWifiP2PConnectedState = true
             onWifiP2PConnected?.invoke()
         }
 
         override fun onDisconnected() {
-            Log.d(TAG, "WiFi P2P disconnected")
+            Log.i(TAG, "=== WiFi P2P onDisconnected ===")
             isWifiP2PConnectedState = false
             onWifiP2PDisconnected?.invoke()
         }
 
         override fun onFailed(errorCode: ValueUtil.CxrWifiErrorCode?) {
-            Log.e(TAG, "WiFi P2P connection failed: $errorCode")
+            Log.e(TAG, "=== WiFi P2P onFailed === errorCode=$errorCode")
             isWifiP2PConnectedState = false
             onWifiP2PFailed?.invoke()
+        }
+
+        override fun onP2pDeviceAvailable(deviceName: String?, ip: String?, port: String?) {
+            Log.i(TAG, "=== WiFi P2P onP2pDeviceAvailable === device=$deviceName, ip=$ip, port=$port")
         }
     }
 
@@ -175,7 +224,8 @@ object RokidSdkManager {
     }
 
     /**
-     * Initialize the Rokid CXR-M SDK with credentials
+     * Initialize the CxrApi singleton and set up listeners.
+     * Registers the access key for SN verification during Bluetooth connection.
      */
     fun initialize(context: Context): Boolean {
         if (isInitialized) {
@@ -183,32 +233,40 @@ object RokidSdkManager {
             return true
         }
 
-        val clientId = BuildConfig.ROKID_CLIENT_ID
-        val clientSecret = BuildConfig.ROKID_CLIENT_SECRET
-        val accessKey = BuildConfig.ROKID_ACCESS_KEY
-
-        if (clientId.isEmpty() || clientSecret.isEmpty() || accessKey.isEmpty()) {
-            Log.e(TAG, "Rokid credentials not configured in local.properties")
-            return false
-        }
-
-        Log.d(TAG, "Initializing Rokid SDK with Client ID: ${clientId.take(8)}...")
         appContext = context.applicationContext
 
         try {
-            // Initialize CxrApi singleton
             cxrApi = CxrApi.getInstance()
 
+            // Register access key for SN verification (required for connectBluetooth)
+            val accessKey = BuildConfig.ROKID_ACCESS_KEY
+            if (accessKey.isNotEmpty()) {
+                cxrApi?.updateRokidAccount(accessKey)
+                Log.d(TAG, "Rokid account registered (accessKey length=${accessKey.length})")
+            } else {
+                Log.w(TAG, "No ROKID_ACCESS_KEY configured - SN verification may fail")
+            }
+
             // Set up custom command listener to receive messages from glasses
+            // The glasses sends via bridge.sendMessage(msgType, caps) where caps contains the actual data.
+            // Here, cmd = the message type (e.g. "command"), and caps holds the content string at index 0.
             cxrApi?.setCustomCmdListener(object : CustomCmdListener {
                 override fun onCustomCmd(cmd: String?, caps: Caps?) {
-                    Log.d(TAG, "Received custom command from glasses: $cmd")
-                    cmd?.let { onMessageFromGlasses?.invoke(it, caps) }
+                    Log.d(TAG, "Received custom command from glasses: type=$cmd, caps=${caps != null}")
+                    if (caps != null && caps.size() > 0) {
+                        try {
+                            val message = caps.at(0).getString()
+                            Log.d(TAG, "Glasses message content (${message.length} chars): ${message.take(100)}")
+                            onMessageFromGlasses?.invoke(message, caps)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to read message from Caps", e)
+                            cmd?.let { onMessageFromGlasses?.invoke(it, caps) }
+                        }
+                    } else {
+                        cmd?.let { onMessageFromGlasses?.invoke(it, caps) }
+                    }
                 }
             })
-
-            // Update Rokid account with access key
-            cxrApi?.updateRokidAccount(accessKey)
 
             Log.d(TAG, "Rokid SDK initialized successfully")
             isInitialized = true
@@ -221,9 +279,9 @@ object RokidSdkManager {
     }
 
     /**
-     * Initialize Bluetooth connection with a specific device.
-     * This is the first step - it will trigger onConnectionInfo callback,
-     * then we automatically call connectBluetooth to complete the connection.
+     * Initialize Bluetooth connection with a discovered device.
+     * This triggers onConnectionInfo callback, then we automatically call
+     * connectBluetooth to complete the connection.
      */
     fun initBluetooth(device: BluetoothDevice) {
         val context = appContext ?: run {
@@ -233,7 +291,7 @@ object RokidSdkManager {
 
         try {
             Log.i(TAG, "=== initBluetooth === Starting with device: ${device.address}")
-            pendingConnect = true  // Flag to call connectBluetooth after getting info
+            pendingConnect = true
             cxrApi?.initBluetooth(context, device, bluetoothCallback)
             Log.i(TAG, "initBluetooth called, waiting for onConnectionInfo callback...")
         } catch (e: Exception) {
@@ -243,43 +301,53 @@ object RokidSdkManager {
     }
 
     /**
-     * Internal method to connect using socketUuid and macAddress from onConnectionInfo.
+     * Connect using socketUuid and macAddress from onConnectionInfo.
+     *
+     * SDK signature: connectBluetooth(context, socketUuid, macAddress, callback, snEncryptContent, clientSecret)
+     *
+     * The SDK performs an SN verification after BT connects:
+     * 1. Gets glasses SN via getGlassInfo
+     * 2. Decrypts snEncryptContent with clientSecret (AES/CBC/PKCS5Padding)
+     * 3. Checks if decrypted text contains the glasses SN
+     *
+     * On first connect we pass empty snEncryptContent, which triggers SN_CHECK_FAILED.
+     * The onFailed handler then reads the SN via reflection and auto-retries with
+     * correctly generated encrypted content.
      */
-    private fun connectBluetoothInternal(
-        socketUuid: String,
-        macAddress: String,
-        encryptKey: ByteArray? = null,
-        rokidAccount: String? = null
-    ) {
+    private fun connectBluetoothInternal(socketUuid: String, macAddress: String, rokidAccount: String = "") {
         val context = appContext ?: run {
             Log.e(TAG, "SDK not initialized")
             return
         }
 
         try {
-            // Determine which account to use:
-            // - First try rokidAccount from onConnectionInfo (if glasses already paired)
-            // - Fall back to empty string (for new pairing)
-            val accountToUse = rokidAccount ?: ""
-
-            // Use provided encryptKey, or fall back to authorizationKey from .lc file
-            val keyToUse = encryptKey ?: authorizationKey ?: ByteArray(0)
+            val clientSecret = BuildConfig.ROKID_CLIENT_SECRET
 
             Log.i(TAG, "=== connectBluetoothInternal ===")
             Log.i(TAG, "  socketUuid=$socketUuid")
             Log.i(TAG, "  macAddress=$macAddress")
-            Log.i(TAG, "  rokidAccount='$accountToUse' (length=${accountToUse.length})")
-            Log.i(TAG, "  encryptKey=${keyToUse.size} bytes (fromAuthKey=${authorizationKey != null})")
+            Log.i(TAG, "  autoRetry=$snAutoRetryInProgress, cachedSn=${generatedSnEncryptContent != null}")
+
+            // Use cached snEncryptContent if available (from previous SN auto-recovery).
+            // Only use dummy content on the very first connection attempt when we don't
+            // know the glasses SN yet. This avoids a redundant two-pass flow on reconnects.
+            val encryptContent = if (generatedSnEncryptContent != null) {
+                Log.i(TAG, "Using cached snEncryptContent (${generatedSnEncryptContent!!.size} bytes)")
+                generatedSnEncryptContent!!
+            } else {
+                Log.i(TAG, "First attempt - using dummy snEncryptContent (SN_CHECK_FAILED expected)")
+                ByteArray(16)
+            }
 
             cxrApi?.connectBluetooth(
                 context,
                 socketUuid,
                 macAddress,
                 bluetoothCallback,
-                keyToUse,
-                accountToUse
+                encryptContent,
+                clientSecret
             )
-            Log.i(TAG, "connectBluetooth called, waiting for onConnected callback...")
+            Log.i(TAG, "connectBluetooth called, waiting for callback...")
         } catch (e: Exception) {
             Log.e(TAG, "Error connecting via Bluetooth", e)
         }
@@ -287,16 +355,60 @@ object RokidSdkManager {
 
     /**
      * Connect to glasses via Bluetooth using saved connection info.
-     * For reconnection after initial pairing.
      */
-    fun connectBluetooth(
-        socketUuid: String,
-        macAddress: String,
-        encryptKey: ByteArray? = null,
-        rokidAccount: String? = null
-    ) {
-        connectBluetoothInternal(socketUuid, macAddress, encryptKey, rokidAccount)
+    fun connectBluetooth(socketUuid: String, macAddress: String) {
+        connectBluetoothInternal(socketUuid, macAddress)
     }
+
+    // ============== SN Auto-Generation Helpers ==============
+
+    /**
+     * Read the glasses serial number from CxrApi's internal GlassInfo field (field I).
+     * The SDK populates this in the getGlassInfo response handler, which runs
+     * before the SN check — so even on SN_CHECK_FAILED, the SN is available.
+     */
+    private fun readGlassesSnFromSdk(): String? {
+        return try {
+            val api = cxrApi ?: return null
+            // CxrApi stores GlassInfo in field 'I'
+            val glassInfoField = api.javaClass.getDeclaredField("I")
+            glassInfoField.isAccessible = true
+            val glassInfo = glassInfoField.get(api) ?: run {
+                Log.w(TAG, "GlassInfo field I is null")
+                return null
+            }
+            // GlassInfo.getDeviceId() returns the serial number
+            val getDeviceId = glassInfo.javaClass.getMethod("getDeviceId")
+            val sn = getDeviceId.invoke(glassInfo) as? String
+            Log.i(TAG, "Read glasses SN from SDK: $sn")
+            sn
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read glasses SN from SDK via reflection", e)
+            null
+        }
+    }
+
+    /**
+     * Generate snEncryptContent by encrypting the glasses SN using the same
+     * algorithm the SDK uses for verification: AES/CBC/PKCS5Padding.
+     *
+     * Key = clientSecret bytes (32 chars = 32 bytes for AES-256)
+     * IV = first 16 bytes of clientSecret
+     */
+    private fun generateSnEncryptContent(glassesSn: String, clientSecret: String): ByteArray? {
+        return try {
+            val keyBytes = clientSecret.toByteArray(Charsets.UTF_8)
+            val key = SecretKeySpec(keyBytes, "AES")
+            val iv = IvParameterSpec(keyBytes, 0, 16)
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(Cipher.ENCRYPT_MODE, key, iv)
+            cipher.doFinal(glassesSn.toByteArray(Charsets.UTF_8))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to generate snEncryptContent", e)
+            null
+        }
+    }
+
 
     /**
      * Send a custom command/message to the glasses via Bluetooth
@@ -313,7 +425,6 @@ object RokidSdkManager {
         }
 
         return try {
-            // Send custom command via the SDK
             caps.write(command)
             cxrApi?.sendCustomCmd("terminal", caps)
             Log.d(TAG, "Sent to glasses: ${command.take(50)}...")
@@ -342,7 +453,10 @@ object RokidSdkManager {
         }
 
         return try {
-            val status = cxrApi?.initWifiP2P(wifiP2PCallback)
+            // initWifiP2P2(connectP2p=true) tells the SDK to auto-connect WiFi
+            // when the glasses report P2P device availability.
+            // Plain initWifiP2P() sets connectP2p=false and skips the connection.
+            val status = cxrApi?.initWifiP2P2(true, wifiP2PCallback)
             Log.d(TAG, "WiFi P2P initialization status: $status")
             status == ValueUtil.CxrStatus.REQUEST_SUCCEED
         } catch (e: Exception) {
@@ -380,9 +494,6 @@ object RokidSdkManager {
     /**
      * Upload and install an APK on the glasses via WiFi P2P.
      * Requires: Bluetooth connected AND WiFi P2P connected
-     *
-     * @param apkPath Absolute path to the APK file
-     * @return true if upload started successfully
      */
     fun startUploadApk(apkPath: String): Boolean {
         if (!isInitialized) {
@@ -395,7 +506,6 @@ object RokidSdkManager {
             return false
         }
 
-        // WiFi P2P may be initialized on-demand by the SDK
         return try {
             val result = cxrApi?.startUploadApk(apkPath, apkCallback) ?: false
             Log.d(TAG, "startUploadApk result: $result for path: $apkPath")
@@ -420,14 +530,8 @@ object RokidSdkManager {
 
     // ============== Status Methods ==============
 
-    /**
-     * Check if SDK is ready
-     */
     fun isReady(): Boolean = isInitialized
 
-    /**
-     * Check if connected to glasses via Bluetooth
-     */
     fun isConnected(): Boolean {
         return try {
             cxrApi?.isBluetoothConnected ?: false
@@ -436,15 +540,9 @@ object RokidSdkManager {
         }
     }
 
-    /**
-     * Get saved MAC address for reconnection
-     */
     fun getSavedMacAddress(): String? = savedMacAddress
-
-    /**
-     * Get saved device name
-     */
     fun getSavedDeviceName(): String? = savedDeviceName
+    fun getSavedSocketUuid(): String? = savedSocketUuid
 
     /**
      * Attempt to reconnect to previously connected glasses
@@ -462,25 +560,6 @@ object RokidSdkManager {
     }
 
     /**
-     * Get saved socket UUID for reconnection
-     */
-    fun getSavedSocketUuid(): String? = savedSocketUuid
-
-    /**
-     * Set authorization key from .lc file for device binding verification.
-     * This key is used as the encryptKey parameter during Bluetooth connection.
-     */
-    fun setAuthorizationKey(key: ByteArray?) {
-        authorizationKey = key
-        Log.i(TAG, "Authorization key set: ${key?.size ?: 0} bytes")
-    }
-
-    /**
-     * Check if authorization key is loaded
-     */
-    fun hasAuthorizationKey(): Boolean = authorizationKey != null
-
-    /**
      * Disconnect from glasses
      */
     fun disconnect() {
@@ -495,7 +574,7 @@ object RokidSdkManager {
     }
 
     /**
-     * Set audio as communication device (for voice input)
+     * Set audio as communication device (for voice input via glasses mic)
      */
     fun setCommunicationDevice() {
         cxrApi?.setCommunicationDevice()

@@ -52,13 +52,9 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import com.claudeglasses.phone.R
 import com.claudeglasses.phone.glasses.ApkInstaller
 import com.claudeglasses.phone.glasses.GlassesConnectionManager
-import com.claudeglasses.phone.glasses.RokidSdkManager
 import com.claudeglasses.phone.terminal.TerminalClient
 import com.claudeglasses.phone.voice.VoiceCommandHandler
 import kotlinx.coroutines.launch
@@ -82,31 +78,14 @@ fun MainScreen() {
     val isListening by voiceHandler.isListening.collectAsState()
     val installState by apkInstaller.installState.collectAsState()
 
-    // 10.0.2.2 is the Android emulator's alias for host machine localhost
-    var serverUrl by remember { mutableStateOf("ws://10.0.2.2:8080") }
+    // Persist server URL in SharedPreferences
+    val prefs = remember { context.getSharedPreferences("claude_glasses", android.content.Context.MODE_PRIVATE) }
+    var serverUrl by remember {
+        mutableStateOf(prefs.getString("server_url", "ws://10.0.2.2:8080") ?: "ws://10.0.2.2:8080")
+    }
     var inputText by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
-    var authKeyLoaded by remember { mutableStateOf(RokidSdkManager.hasAuthorizationKey()) }
-
     val listState = rememberLazyListState()
-
-    // File picker for .lc authorization file
-    val authFilePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            try {
-                context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                    val bytes = inputStream.readBytes()
-                    RokidSdkManager.setAuthorizationKey(bytes)
-                    authKeyLoaded = true
-                    android.util.Log.i("MainScreen", "Loaded authorization key: ${bytes.size} bytes")
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("MainScreen", "Failed to load authorization file", e)
-            }
-        }
-    }
 
     // Initialize voice handler
     LaunchedEffect(Unit) {
@@ -375,7 +354,10 @@ fun MainScreen() {
     if (showSettings) {
         SettingsDialog(
             serverUrl = serverUrl,
-            onServerUrlChange = { serverUrl = it },
+            onServerUrlChange = {
+                serverUrl = it
+                prefs.edit().putString("server_url", it).apply()
+            },
             debugModeEnabled = debugModeEnabled,
             onDebugModeChange = { enabled ->
                 if (enabled) {
@@ -403,11 +385,6 @@ fun MainScreen() {
             // Pass glasses manager for device scanning/connection
             glassesManager = glassesManager,
             glassesState = glassesState,
-            // Authorization key loading
-            authKeyLoaded = authKeyLoaded,
-            onLoadAuthKey = {
-                authFilePicker.launch(arrayOf("*/*"))
-            }
         )
     }
 }
@@ -497,11 +474,11 @@ fun ConnectionStatusBar(
                     text = when (terminalState) {
                         is TerminalClient.ConnectionState.Connected -> "Connected"
                         is TerminalClient.ConnectionState.Connecting -> "Connecting..."
-                        is TerminalClient.ConnectionState.Error -> "Error"
+                        is TerminalClient.ConnectionState.Error -> (terminalState as TerminalClient.ConnectionState.Error).message.take(40)
                         else -> ""
                     },
                     fontSize = 11.sp,
-                    color = Color.Gray
+                    color = if (terminalState is TerminalClient.ConnectionState.Error) Color.Red else Color.Gray
                 )
             }
             Spacer(Modifier.width(4.dp))
@@ -565,12 +542,9 @@ fun SettingsDialog(
     apkInstaller: ApkInstaller,
     onCancelInstall: () -> Unit,
     onOpenGlassesApp: () -> Unit,
-    // New params for device connection
+    // Device connection
     glassesManager: GlassesConnectionManager? = null,
     glassesState: GlassesConnectionManager.ConnectionState? = null,
-    // Authorization key params
-    authKeyLoaded: Boolean = false,
-    onLoadAuthKey: () -> Unit = {}
 ) {
     var glassesIp by remember { mutableStateOf("") }
     var connectionTestResult by remember { mutableStateOf<String?>(null) }
@@ -702,36 +676,6 @@ fun SettingsDialog(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (wifiP2PConnected) Color(0xFF4CAF50) else Color.Gray
                                 )
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-
-                        // Authorization file loading (for SN verification)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                if (authKeyLoaded) Icons.Default.Key else Icons.Default.VpnKey,
-                                contentDescription = null,
-                                tint = if (authKeyLoaded) Color(0xFF4CAF50) else Color.Gray,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    if (authKeyLoaded) "Authorization loaded" else "No authorization",
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Text(
-                                    "Load .lc file from Rokid portal",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.Gray
-                                )
-                            }
-                            TextButton(onClick = onLoadAuthKey) {
-                                Text(if (authKeyLoaded) "Replace" else "Load")
                             }
                         }
 

@@ -21,7 +21,7 @@ class ClaudeGlassesApp : Application() {
         if (RokidSdkManager.initialize(this)) {
             Log.d(TAG, "Rokid SDK initialized successfully")
         } else {
-            Log.w(TAG, "Rokid SDK initialization failed - check credentials")
+            Log.w(TAG, "Rokid SDK initialization failed - check rokid.accessKey in local.properties")
         }
     }
 

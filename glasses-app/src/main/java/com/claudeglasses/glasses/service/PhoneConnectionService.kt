@@ -95,24 +95,29 @@ class PhoneConnectionService(
     private fun initializeBridge() {
         cxrBridge = CXRServiceBridge()
 
+        _connectionState.value = ConnectionState.Connecting
+
         // Set up status listener for connection events
         cxrBridge?.setStatusListener(object : CXRServiceBridge.StatusListener {
             override fun onConnected(name: String?, mac: String?, deviceType: Int) {
-                Log.d(TAG, "Phone connected via CXR bridge: $name ($mac), type=$deviceType")
+                Log.i(TAG, "Phone connected via CXR bridge: $name ($mac), type=$deviceType")
                 connectedDeviceName = name
                 connectedDeviceMac = mac
                 isConnected = true
+                _connectionState.value = ConnectionState.Connected("$name ($mac)")
             }
 
             override fun onDisconnected() {
-                Log.d(TAG, "Phone disconnected from CXR bridge")
+                Log.i(TAG, "Phone disconnected from CXR bridge")
                 connectedDeviceName = null
                 connectedDeviceMac = null
                 isConnected = false
+                _connectionState.value = ConnectionState.Disconnected
             }
 
             override fun onConnecting(name: String?, mac: String?, deviceType: Int) {
                 Log.d(TAG, "Phone connecting: $name ($mac)")
+                _connectionState.value = ConnectionState.Connecting
             }
 
             override fun onARTCStatus(latency: Float, connected: Boolean) {
@@ -127,12 +132,28 @@ class PhoneConnectionService(
         // Subscribe to terminal messages from phone
         val result = cxrBridge?.subscribe(MSG_TYPE_TERMINAL, object : CXRServiceBridge.MsgCallback {
             override fun onReceive(msgType: String?, caps: Caps?, data: ByteArray?) {
-                Log.d(TAG, "Received message type: $msgType")
-                // Convert data to string if available
-                val message = data?.toString(Charsets.UTF_8) ?: caps?.toString() ?: ""
+                Log.d(TAG, "Received message type: $msgType, caps=${caps != null}, data=${data?.size}")
+                // Read string from Caps container (phone writes via caps.write(string))
+                // caps.at(0).getString() reads the first value written into the Caps object
+                val message = when {
+                    data != null && data.isNotEmpty() -> {
+                        String(data, Charsets.UTF_8)
+                    }
+                    caps != null && caps.size() > 0 -> {
+                        try {
+                            caps.at(0).getString()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to read string from Caps", e)
+                            ""
+                        }
+                    }
+                    else -> ""
+                }
                 if (message.isNotEmpty()) {
-                    Log.d(TAG, "Message content: ${message.take(100)}...")
+                    Log.d(TAG, "Message content (${message.length} chars): ${message.take(100)}...")
                     onMessageReceived(message)
+                } else {
+                    Log.w(TAG, "Received empty message from phone")
                 }
             }
         })
