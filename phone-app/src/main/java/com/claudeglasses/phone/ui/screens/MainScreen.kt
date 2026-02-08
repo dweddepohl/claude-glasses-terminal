@@ -891,16 +891,35 @@ fun SettingsDialog(
                         )
                         Spacer(Modifier.height(8.dp))
 
-                        Button(
-                            onClick = { apkInstaller.installViaSdk() },
-                            enabled = installState is ApkInstaller.InstallState.Idle ||
-                                     installState is ApkInstaller.InstallState.Error ||
-                                     installState is ApkInstaller.InstallState.Success,
-                            modifier = Modifier.fillMaxWidth()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Install via SDK")
+                            Button(
+                                onClick = { apkInstaller.installViaSdk() },
+                                enabled = installState is ApkInstaller.InstallState.Idle ||
+                                         installState is ApkInstaller.InstallState.Error ||
+                                         installState is ApkInstaller.InstallState.Success,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Install")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    RokidSdkManager.uninstallApk("com.claudeglasses.glasses")
+                                },
+                                enabled = installState is ApkInstaller.InstallState.Idle ||
+                                         installState is ApkInstaller.InstallState.Error ||
+                                         installState is ApkInstaller.InstallState.Success,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Uninstall")
+                            }
                         }
 
                         Spacer(Modifier.height(16.dp))
