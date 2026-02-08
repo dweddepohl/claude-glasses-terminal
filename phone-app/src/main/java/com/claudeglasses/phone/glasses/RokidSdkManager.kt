@@ -74,6 +74,10 @@ object RokidSdkManager {
     var onApkUploadFailed: (() -> Unit)? = null
     var onApkInstallSucceed: (() -> Unit)? = null
     var onApkInstallFailed: (() -> Unit)? = null
+    var onApkUninstallSucceed: (() -> Unit)? = null
+    var onApkUninstallFailed: (() -> Unit)? = null
+    var onAppOpenSucceed: (() -> Unit)? = null
+    var onAppOpenFailed: (() -> Unit)? = null
 
     // AI scene callbacks (voice input via glasses long-press)
     var onAiKeyDown: (() -> Unit)? = null
@@ -213,18 +217,22 @@ object RokidSdkManager {
 
         override fun onUninstallApkSucceed() {
             Log.d(TAG, "APK uninstall succeeded")
+            onApkUninstallSucceed?.invoke()
         }
 
         override fun onUninstallApkFailed() {
             Log.e(TAG, "APK uninstall failed")
+            onApkUninstallFailed?.invoke()
         }
 
         override fun onOpenAppSucceed() {
             Log.d(TAG, "App opened successfully")
+            onAppOpenSucceed?.invoke()
         }
 
         override fun onOpenAppFailed() {
             Log.e(TAG, "Failed to open app")
+            onAppOpenFailed?.invoke()
         }
     }
 
@@ -533,6 +541,57 @@ object RokidSdkManager {
             result
         } catch (e: Exception) {
             Log.e(TAG, "Error starting APK upload", e)
+            false
+        }
+    }
+
+    /**
+     * Uninstall an app from the glasses by package name.
+     * Requires: Bluetooth connected
+     */
+    fun uninstallApk(packageName: String): Boolean {
+        if (!isInitialized) {
+            Log.e(TAG, "SDK not initialized")
+            return false
+        }
+
+        if (!isBluetoothConnectedState) {
+            Log.e(TAG, "Bluetooth not connected")
+            return false
+        }
+
+        return try {
+            val status = cxrApi?.uninstallApk(packageName, apkCallback)
+            Log.d(TAG, "uninstallApk result: $status for package: $packageName")
+            status == ValueUtil.CxrStatus.REQUEST_SUCCEED
+        } catch (e: Exception) {
+            Log.e(TAG, "Error uninstalling APK", e)
+            false
+        }
+    }
+
+    /**
+     * Open/launch an app on the glasses by package name and activity name.
+     * Requires: Bluetooth connected
+     */
+    fun openApp(packageName: String, activityName: String): Boolean {
+        if (!isInitialized) {
+            Log.e(TAG, "SDK not initialized")
+            return false
+        }
+
+        if (!isBluetoothConnectedState) {
+            Log.e(TAG, "Bluetooth not connected")
+            return false
+        }
+
+        return try {
+            val appInfo = com.rokid.cxr.client.extend.infos.RKAppInfo(packageName, activityName)
+            val status = cxrApi?.openApp(appInfo, apkCallback)
+            Log.d(TAG, "openApp result: $status for $packageName/$activityName")
+            status == ValueUtil.CxrStatus.REQUEST_SUCCEED
+        } catch (e: Exception) {
+            Log.e(TAG, "Error opening app on glasses", e)
             false
         }
     }
